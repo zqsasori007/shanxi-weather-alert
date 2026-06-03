@@ -1,0 +1,22 @@
+name: Shanxi Weather Alert
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # 每10分钟运行一次
+  workflow_dispatch:  # 允许手动触发测试
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+      - name: Run alert script
+        run: python alert.py
