@@ -2,7 +2,8 @@ name: Shanxi Weather Alert
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # 每10分钟运行一次
+    # 北京时间8:00-18:00每小时运行一次（UTC 0:00-10:00）
+    - cron: '0 0-10 * * *'
   workflow_dispatch:  # 允许手动触发测试
 
 jobs:
