@@ -219,8 +219,8 @@ def send_forecast_alert(hit_keywords):
 
 if __name__ == "__main__":
     now = datetime.now()
-    # 只在北京时间8:00-18:00之间运行所有功能
-    if 8 <= now.hour <= 18:
+    # 只在北京时间8:00-20:00之间运行所有功能
+    if 8 <= now.hour <= 20:
         # 第一部分：官方气象预警推送（每小时检查一次）
         latest_alert = get_latest_alert()
         if latest_alert:
@@ -239,31 +239,3 @@ if __name__ == "__main__":
                 print("无需要推送的全省未来3天灾害天气或今日已推送")
     else:
         print("非工作时间，系统休眠中")
-# ========== 测试专用，用完删除 ==========
-def send_test_message():
-    """发送测试消息，确认机器人正常工作"""
-    content = """✅ 【系统测试成功】
-山西气象预警系统运行正常！
-机器人已成功连接到企业微信
-所有添加了"山西气象预警助手"的群都会收到这条消息
-
-测试时间：2026年6月5日"""
-
-    message = {
-        "msgtype": "text",
-        "text": {
-            "content": content
-        }
-    }
-    
-    for webhook_url in WEBHOOK_URLS:
-        try:
-            response = requests.post(webhook_url, json=message, timeout=10)
-            response.raise_for_status()
-            print(f"测试消息发送成功到: {webhook_url}")
-        except Exception as e:
-            print(f"测试消息发送失败到 {webhook_url}: {e}")
-
-# 执行测试
-send_test_message()
-# ========== 测试专用，用完删除 ==========
