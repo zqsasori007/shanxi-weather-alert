@@ -13,8 +13,20 @@ WEBHOOK_URLS = [
 ]
 # 防重复推送缓存文件
 CACHE_FILE = "weather_cache.txt"
-# 太原未来3天预报地址
-FORECAST_URL = "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html"
+# 山西全省11个地级市未来3天预报地址
+CITY_FORECAST_URLS = [
+    "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",  # 太原
+    "http://www.nmc.cn/publish/forecast/ASX/datong.html",   # 大同
+    "http://www.nmc.cn/publish/forecast/ASX/shuozhou.html", # 朔州
+    "http://www.nmc.cn/publish/forecast/ASX/xinzhou.html",  # 忻州
+    "http://www.nmc.cn/publish/forecast/ASX/lvliang.html",  # 吕梁
+    "http://www.nmc.cn/publish/forecast/ASX/jinzhong.html", # 晋中
+    "http://www.nmc.cn/publish/forecast/ASX/yangquan.html", # 阳泉
+    "http://www.nmc.cn/publish/forecast/ASX/changzhi.html", # 长治
+    "http://www.nmc.cn/publish/forecast/ASX/jincheng.html", # 晋城
+    "http://www.nmc.cn/publish/forecast/ASX/linfen.html",   # 临汾
+    "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"  # 运城
+]
 # 全灾害触发关键词（满足任意一个即推送预报提醒）
 WARN_KEYWORDS = ["中雨","大雨","暴雨","大暴雨","大风","雷暴大风","冰雹","暴雪","大雪","高温","雷电","雷阵雨"]
 # ===================================
@@ -149,35 +161,42 @@ def save_last_send_date():
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         f.write(today)
 
-def get_3day_forecast():
-    """精准抓取太原未来3天（今天+明天+后天）的天气预报"""
+def get_province_3day_forecast():
+    """抓取山西全省11个地级市未来3天的天气预报"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    try:
-        response = requests.get(FORECAST_URL, headers=headers, timeout=15)
-        response.encoding = "utf-8"
-        tree = ET.HTML(response.text)
-        
-        # 提取未来3天的天气描述（中央气象台页面固定结构）
-        day_divs = tree.xpath('//*[@id="day7"]/div[position()<=3]')
-        all_weather_text = ""
-        for div in day_divs:
-            all_weather_text += " " + "".join(div.itertext())
-        
-        # 匹配灾害关键词
-        hit_keywords = [k for k in WARN_KEYWORDS if k in all_weather_text]
-        return list(set(hit_keywords))  # 去重
-    except Exception as e:
-        print(f"获取未来3天预报失败: {e}")
-        return []
+    all_hit_keywords = set()  # 使用集合自动去重
+    
+    for city_url in CITY_FORECAST_URLS:
+        try:
+            response = requests.get(city_url, headers=headers, timeout=8)
+            response.encoding = "utf-8"
+            tree = ET.HTML(response.text)
+            
+            # 提取未来3天的天气描述
+            day_divs = tree.xpath('//*[@id="day7"]/div[position()<=3]')
+            city_weather_text = ""
+            for div in day_divs:
+                city_weather_text += " " + "".join(div.itertext())
+            
+            # 匹配灾害关键词
+            for keyword in WARN_KEYWORDS:
+                if keyword in city_weather_text:
+                    all_hit_keywords.add(keyword)
+                    
+        except Exception as e:
+            print(f"获取城市预报失败: {city_url}, 错误: {e}")
+            continue  # 单个城市失败不影响其他城市
+    
+    return list(all_hit_keywords)
 
 def send_forecast_alert(hit_keywords):
-    """推送未来3天灾害天气预报提醒"""
+    """推送全省未来3天灾害天气预报提醒"""
     weather_text = "、".join(hit_keywords)
-    content = f"""【太原未来3天灾害天气提前预警】
+    content = f"""【山西全省未来3天灾害天气提前预警】
 ⚠️ 预报出现：{weather_text}
-门店提前防范提示：
+全省各门店提前防范提示：
 1. 降雨/暴雪：露天展车优先入库，无法入库做好防雨防雪遮盖，排查展厅库房排水
 2. 大风/雷电：加固户外广告牌、展架物料，暂停户外试驾作业
 3. 高温：注意车辆停放防晒，车间防暑降温，检查电瓶和消防设施
@@ -204,15 +223,15 @@ if __name__ == "__main__":
     if latest_alert:
         send_official_alert(latest_alert)
 
-    # 第二部分：新增未来3天灾害天气预报推送
+    # 第二部分：新增全省未来3天灾害天气预报推送
     today = datetime.now().strftime("%Y-%m-%d")
     last_send = get_last_send_date()
-    hit_keywords = get_3day_forecast()
+    hit_keywords = get_province_3day_forecast()
 
     # 当天未推送过 + 匹配到灾害天气 → 推送
     if hit_keywords and last_send != today:
         send_forecast_alert(hit_keywords)
         save_last_send_date()
-        print(f"已推送今日未来3天天气预警: {hit_keywords}")
+        print(f"已推送今日全省未来3天天气预警: {hit_keywords}")
     else:
-        print("无需要推送的未来3天灾害天气或今日已推送")
+        print("无需要推送的全省未来3天灾害天气或今日已推送")
