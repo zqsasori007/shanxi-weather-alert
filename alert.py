@@ -218,20 +218,24 @@ def send_forecast_alert(hit_keywords):
             print(f"预报提醒推送失败到 {webhook_url}: {e}")
 
 if __name__ == "__main__":
-    # 第一部分：原有官方气象预警推送（不变）
-    latest_alert = get_latest_alert()
-    if latest_alert:
-        send_official_alert(latest_alert)
+    now = datetime.now()
+    # 只在北京时间8:00-18:00之间运行所有功能
+    if 8 <= now.hour <= 18:
+        # 第一部分：官方气象预警推送（每小时检查一次）
+        latest_alert = get_latest_alert()
+        if latest_alert:
+            send_official_alert(latest_alert)
 
-    # 第二部分：新增全省未来3天灾害天气预报推送
-    today = datetime.now().strftime("%Y-%m-%d")
-    last_send = get_last_send_date()
-    hit_keywords = get_province_3day_forecast()
-
-    # 当天未推送过 + 匹配到灾害天气 → 推送
-    if hit_keywords and last_send != today:
-        send_forecast_alert(hit_keywords)
-        save_last_send_date()
-        print(f"已推送今日全省未来3天天气预警: {hit_keywords}")
+        # 第二部分：全省未来3天预报提醒（固定每天8:00-8:59推送一次）
+        if now.hour == 8:
+            last_send = get_last_send_date()
+            hit_keywords = get_province_3day_forecast()
+            
+            if hit_keywords and last_send != now.strftime("%Y-%m-%d"):
+                send_forecast_alert(hit_keywords)
+                save_last_send_date()
+                print(f"已推送今日全省未来3天天气预警: {hit_keywords}")
+            else:
+                print("无需要推送的全省未来3天灾害天气或今日已推送")
     else:
-        print("无需要推送的全省未来3天灾害天气或今日已推送")
+        print("非工作时间，系统休眠中")
