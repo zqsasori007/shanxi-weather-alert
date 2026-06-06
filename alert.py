@@ -59,12 +59,30 @@ def extract_alert_type(title):
     return title
 
 def extract_city_name(title):
-    """从预警标题中只提取市级名称，不提取区县"""
-    # 匹配"山西省XX市"格式，只保留市名
+    """从预警标题中提取市级名称（适配新JSON接口所有格式）"""
+    # 格式1："山西省XX市发布XX预警"
     match = re.search(r'山西省([\u4e00-\u9fa5]+市)', title)
     if match:
         return match.group(1).replace("市", "")
-    return "山西"  # 匹配失败返回"山西"
+    
+    # 格式2："XX市发布XX预警"
+    match = re.search(r'([\u4e00-\u9fa5]+市)发布', title)
+    if match:
+        return match.group(1).replace("市", "")
+    
+    # 格式3："山西省XX市XX区发布XX预警"
+    match = re.search(r'山西省([\u4e00-\u9fa5]+市)[\u4e00-\u9fa5]+区', title)
+    if match:
+        return match.group(1).replace("市", "")
+    
+    # 格式4："山西省发布XX预警（预警区域：XX市、XX市）"
+    match = re.search(r'预警区域：([\u4e00-\u9fa5、]+)', title)
+    if match:
+        # 取第一个城市
+        first_city = match.group(1).split("、")[0]
+        return first_city.replace("市", "")
+    
+    return "山西"  # 所有格式都匹配失败才返回"山西"
 
 def get_prevention_tips(title):
     """根据官方预警标题匹配4S店专属防范提示"""
