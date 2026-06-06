@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 
 # =========配置区（无需修改）=========
-# 中国气象局山西省官方预警RSS源（永久免费）
-RSS_URL = "https://www.nmc.cn/rss/warning/140000.xml"
+# 中国气象局山西省官方预警JSON接口（永久免费，2026年最新）
+ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 # 企业微信群机器人Webhook地址列表
 WEBHOOK_URLS = [
     "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
@@ -188,21 +188,25 @@ def save_alert_type_cache(alert_type):
         f.write(alert_type + "\n")
 
 def get_all_alerts():
-    """获取山西省所有当前有效的官方预警"""
+    """获取山西省所有当前有效的官方预警（使用新的JSON接口）"""
     try:
-        response = requests.get(RSS_URL, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(ALERT_API_URL, headers=headers, timeout=10)
         response.raise_for_status()
-        root = ET.fromstring(response.content)
-        channel = root.find('channel')
-        items = channel.findall('item')
+        data = response.json()
         
         alerts_by_type = {}
         sent_types = get_alert_type_cache()
         
-        for item in items:
-            title = clean_text(item.find('title').text)
-            description = clean_text(item.find('description').text)
-            pubDate = clean_text(item.find('pubDate').text)
+        if data["code"] != 0 or not data["data"]:
+            return {}
+        
+        for alert in data["data"]:
+            title = clean_text(alert["headline"])
+            description = clean_text(alert["description"])
+            pubDate = clean_text(alert["effective"])
             
             # 提取预警类型
             alert_type = extract_alert_type(title)
