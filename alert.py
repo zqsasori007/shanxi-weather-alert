@@ -2,7 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # =========配置区（无需修改）=========
 # 中国气象局山西省官方预警RSS源（永久免费）
@@ -43,12 +43,20 @@ def clean_text(text):
     return text.strip()
 
 def extract_alert_type(title):
-    """从预警标题中提取预警类型（如"大风蓝色预警"）"""
-    # 匹配"XX蓝色预警"、"XX黄色预警"、"XX橙色预警"、"XX红色预警"格式
-    match = re.search(r'([\u4e00-\u9fa5]+(蓝色|黄色|橙色|红色)预警)', title)
-    if match:
-        return match.group(1)
-    return title  # 匹配失败返回原标题
+    """从预警标题中提取预警类型（宽松匹配，避免格式问题）"""
+    if "暴雨" in title:
+        return "暴雨预警"
+    elif "大风" in title or "雷暴大风" in title:
+        return "大风预警"
+    elif "冰雹" in title:
+        return "冰雹预警"
+    elif "暴雪" in title or "大雪" in title:
+        return "暴雪预警"
+    elif "高温" in title:
+        return "高温预警"
+    elif "雷电" in title:
+        return "雷电预警"
+    return title
 
 def extract_city_name(title):
     """从预警标题中只提取市级名称，不提取区县"""
@@ -89,7 +97,7 @@ def get_prevention_tips(title):
 5. 冰雹过后不要立即移动车辆，先检查车身和玻璃是否受损
 6. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "暴雪" in title:
+    elif "暴雪" in title or "大雪" in title:
         return """⚠️ 【山西气象灾害-暴雪天气预警】
 1. 检查展厅、库房屋顶承重，及时清理积雪防止坍塌
 2. 准备除雪工具和融雪剂，提前清理门口和通道积雪
@@ -124,14 +132,18 @@ def get_last_send_date():
         return f.read().strip()
 
 def save_last_send_date():
-    """写入今日日期，标记预报已推送"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """写入今日日期，标记预报已推送（使用北京时间）"""
+    now_utc = datetime.utcnow()
+    now = now_utc + timedelta(hours=8)
+    today = now.strftime("%Y-%m-%d")
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         f.write(today)
 
 def get_alert_type_cache():
-    """读取当天已发送的预警类型列表"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """读取当天已发送的预警类型列表（使用北京时间）"""
+    now_utc = datetime.utcnow()
+    now = now_utc + timedelta(hours=8)
+    today = now.strftime("%Y-%m-%d")
     
     # 如果缓存文件不存在，返回空列表
     if not os.path.exists(ALERT_TYPE_CACHE):
@@ -158,8 +170,10 @@ def get_alert_type_cache():
     return lines[1:]
 
 def save_alert_type_cache(alert_type):
-    """保存预警类型到当天缓存"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """保存预警类型到当天缓存（使用北京时间）"""
+    now_utc = datetime.utcnow()
+    now = now_utc + timedelta(hours=8)
+    today = now.strftime("%Y-%m-%d")
     existing_types = get_alert_type_cache()
     
     # 如果该类型已经存在，不重复保存
@@ -307,12 +321,17 @@ def send_forecast_alert(hit_keywords):
             print(f"预报提醒推送失败到 {webhook_url}: {e}")
 
 if __name__ == "__main__":
-    now = datetime.now()
+    # 获取UTC时间并加8小时得到北京时间
+    now_utc = datetime.utcnow()
+    now = now_utc + timedelta(hours=8)
+    
     # 只在北京时间8:00-20:00之间运行所有功能
     if 8 <= now.hour <= 20:
         # 第一部分：官方气象预警推送（每小时检查一次，同类型同一天只发1次）
         all_alerts = get_all_alerts()
+        print(f"获取到{len(all_alerts)}种新预警")
         for alert_type, alert_data in all_alerts.items():
+            print(f"准备推送: {alert_type}, 城市: {alert_data['cities']}")
             send_merged_alert(alert_type, alert_data)
 
         # 第二部分：全省未来3天预报提醒（固定每天8:00-8:59推送一次）
@@ -327,4 +346,4 @@ if __name__ == "__main__":
             else:
                 print("无需要推送的全省未来3天灾害天气或今日已推送")
     else:
-        print("非工作时间，系统休眠中")
+        print(f"非工作时间，系统休眠中。当前北京时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
