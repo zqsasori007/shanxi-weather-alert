@@ -31,6 +31,43 @@ CITY_FORECAST_URLS = [
 ]
 # 全灾害触发关键词（满足任意一个即推送预报提醒）
 WARN_KEYWORDS = ["中雨","大雨","暴雨","大暴雨","大风","雷暴大风","冰雹","暴雪","大雪","高温","雷电","雷阵雨"]
+# 山西全省区县-市级映射表（完整）
+SHANXI_COUNTY_TO_CITY = {
+    # 太原
+    "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
+    "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
+    # 大同
+    "大同": "大同", "平城": "大同", "云冈": "大同", "云州": "大同", "新荣": "大同",
+    "阳高": "大同", "天镇": "大同", "广灵": "大同", "灵丘": "大同", "浑源": "大同", "左云": "大同",
+    # 朔州
+    "朔州": "朔州", "朔城": "朔州", "平鲁": "朔州", "山阴": "朔州", "应县": "朔州", "右玉": "朔州", "怀仁": "朔州",
+    # 忻州
+    "忻州": "忻州", "忻府": "忻州", "定襄": "忻州", "五台": "忻州", "代县": "忻州", "繁峙": "忻州",
+    "宁武": "忻州", "静乐": "忻州", "神池": "忻州", "五寨": "忻州", "岢岚": "忻州", "河曲": "忻州",
+    "保德": "忻州", "偏关": "忻州", "原平": "忻州",
+    # 吕梁
+    "吕梁": "吕梁", "离石": "吕梁", "文水": "吕梁", "交城": "吕梁", "兴县": "吕梁", "临县": "吕梁",
+    "柳林": "吕梁", "石楼": "吕梁", "岚县": "吕梁", "方山": "吕梁", "中阳": "吕梁", "交口": "吕梁",
+    "孝义": "吕梁", "汾阳": "吕梁",
+    # 晋中
+    "晋中": "晋中", "榆次": "晋中", "太谷": "晋中", "祁县": "晋中", "平遥": "晋中", "灵石": "晋中",
+    "介休": "晋中", "榆社": "晋中", "左权": "晋中", "和顺": "晋中", "昔阳": "晋中", "寿阳": "晋中",
+    # 阳泉
+    "阳泉": "阳泉", "城区": "阳泉", "矿区": "阳泉", "郊区": "阳泉", "平定": "阳泉", "盂县": "阳泉",
+    # 长治
+    "长治": "长治", "潞州": "长治", "上党": "长治", "屯留": "长治", "潞城": "长治",
+    "襄垣": "长治", "平顺": "长治", "黎城": "长治", "壶关": "长治", "长子": "长治", "武乡": "长治", "沁县": "长治", "沁源": "长治",
+    # 晋城
+    "晋城": "晋城", "城区": "晋城", "沁水": "晋城", "阳城": "晋城", "陵川": "晋城", "泽州": "晋城", "高平": "晋城",
+    # 临汾
+    "临汾": "临汾", "尧都": "临汾", "曲沃": "临汾", "翼城": "临汾", "襄汾": "临汾", "洪洞": "临汾",
+    "古县": "临汾", "安泽": "临汾", "浮山": "临汾", "吉县": "临汾", "乡宁": "临汾", "大宁": "临汾",
+    "隰县": "临汾", "永和": "临汾", "蒲县": "临汾", "汾西": "临汾", "侯马": "临汾", "霍州": "临汾",
+    # 运城
+    "运城": "运城", "盐湖": "运城", "临猗": "运城", "万荣": "运城", "闻喜": "运城", "稷山": "运城",
+    "新绛": "运城", "绛县": "运城", "垣曲": "运城", "夏县": "运城", "平陆": "运城", "芮城": "运城",
+    "永济": "运城", "河津": "运城"
+}
 # ===================================
 
 def clean_text(text):
@@ -42,53 +79,29 @@ def clean_text(text):
     text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
     return text.strip()
 
-def extract_alert_type(title):
-    """从预警标题中提取预警类型（宽松匹配，避免格式问题）"""
-    if "暴雨" in title:
-        return "暴雨预警"
-    elif "大风" in title or "雷暴大风" in title:
-        return "大风预警"
-    elif "冰雹" in title:
-        return "冰雹预警"
-    elif "暴雪" in title or "大雪" in title:
-        return "暴雪预警"
-    elif "高温" in title:
-        return "高温预警"
-    elif "雷电" in title:
-        return "雷电预警"
-    return title
+def extract_alert_type_and_level(title):
+    """从预警标题中提取预警类型和等级"""
+    # 匹配"XX橙色预警"、"XX红色预警"格式
+    match = re.search(r'([\u4e00-\u9fa5]+)(橙色|红色)预警', title)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
 
 def extract_city_name(title):
-    """从预警标题中提取市级名称（适配新JSON接口所有格式）"""
-    # 格式1："山西省XX市发布XX预警"
-    match = re.search(r'山西省([\u4e00-\u9fa5]+市)', title)
-    if match:
-        return match.group(1).replace("市", "")
+    """从预警标题中提取市级名称（适配新API所有格式）"""
+    # 遍历所有区县名称，找到匹配的
+    for county, city in SHANXI_COUNTY_TO_CITY.items():
+        if county in title:
+            return city
     
-    # 格式2："XX市发布XX预警"
-    match = re.search(r'([\u4e00-\u9fa5]+市)发布', title)
-    if match:
-        return match.group(1).replace("市", "")
-    
-    # 格式3："山西省XX市XX区发布XX预警"
-    match = re.search(r'山西省([\u4e00-\u9fa5]+市)[\u4e00-\u9fa5]+区', title)
-    if match:
-        return match.group(1).replace("市", "")
-    
-    # 格式4："山西省发布XX预警（预警区域：XX市、XX市）"
-    match = re.search(r'预警区域：([\u4e00-\u9fa5、]+)', title)
-    if match:
-        # 取第一个城市
-        first_city = match.group(1).split("、")[0]
-        return first_city.replace("市", "")
-    
-    return "山西"  # 所有格式都匹配失败才返回"山西"
+    # 如果都没匹配到，返回"山西"
+    return "山西"
 
-def get_prevention_tips(title):
-    """根据官方预警标题匹配4S店专属防范提示"""
-    title = title.lower()
+def get_prevention_tips(alert_type):
+    """根据预警类型匹配4S店专属防范提示"""
+    alert_type = alert_type.lower()
     
-    if "暴雨" in title:
+    if "暴雨" in alert_type:
         return """⚠️ 【山西气象灾害-暴雨天气预警】
 1. 立即将所有露天车辆移至室内或地势较高处，无法转移的用加厚防雨布全覆盖
 2. 暂停户外试驾活动
@@ -97,7 +110,7 @@ def get_prevention_tips(title):
 5. 关闭所有户外用电设备电源，加固充电桩防雨
 6. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "大风" in title or "雷暴大风" in title:
+    elif "大风" in alert_type or "雷暴大风" in alert_type:
         return """⚠️ 【山西气象灾害-大风天气预警】
 1. 立即加固所有户外广告牌、易拉宝、遮阳棚、指示牌
 2. 将露天车辆移至建筑物背风面，远离大树和高空坠物区域
@@ -106,7 +119,7 @@ def get_prevention_tips(title):
 5. 提醒员工不要在户外逗留，注意高空坠物安全
 6. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "冰雹" in title:
+    elif "冰雹" in alert_type:
         return """⚠️ 【山西气象灾害-冰雹天气预警】
 1. 立即将所有露天车辆转移至室内或车库
 2. 无法转移的车辆用专用防冰雹车衣或厚棉被覆盖
@@ -115,7 +128,7 @@ def get_prevention_tips(title):
 5. 冰雹过后不要立即移动车辆，先检查车身和玻璃是否受损
 6. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "暴雪" in title or "大雪" in title:
+    elif "暴雪" in alert_type or "大雪" in alert_type:
         return """⚠️ 【山西气象灾害-暴雪天气预警】
 1. 检查展厅、库房屋顶承重，及时清理积雪防止坍塌
 2. 准备除雪工具和融雪剂，提前清理门口和通道积雪
@@ -123,7 +136,7 @@ def get_prevention_tips(title):
 4. 检查车辆防冻液和电瓶，确保救援车辆随时可用
 5. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "高温" in title:
+    elif "高温" in alert_type:
         return """⚠️ 【山西气象灾害-高温天气预警】
 1. 检查露天展车电瓶和轮胎，避免长时间暴晒
 2. 展厅空调提前开启，确保客户和员工舒适
@@ -132,7 +145,7 @@ def get_prevention_tips(title):
 5. 检查消防设施，防止车辆自燃和火灾事故
 6. 提醒员工、客户、合作二级网点注意安全防护"""
     
-    elif "雷电" in title:
+    elif "雷电" in alert_type:
         return """⚠️ 【山西气象灾害-雷电天气预警】
 1. 暂停所有户外试驾和作业，所有人员立即进入室内
 2. 关闭不必要的电器设备，拔掉电源插头
@@ -205,8 +218,8 @@ def save_alert_type_cache(alert_type):
             f.write(t + "\n")
         f.write(alert_type + "\n")
 
-def get_all_alerts():
-    """获取山西省所有当前有效的官方预警（使用新的JSON接口）"""
+def get_all_high_level_alerts():
+    """获取山西省所有当前有效的橙色和红色预警"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -226,8 +239,12 @@ def get_all_alerts():
             description = clean_text(alert["description"])
             pubDate = clean_text(alert["effective"])
             
-            # 提取预警类型
-            alert_type = extract_alert_type(title)
+            # 提取预警类型和等级
+            alert_type, alert_level = extract_alert_type_and_level(title)
+            
+            # 只保留橙色和红色预警
+            if not alert_level or alert_level not in ["橙色", "红色"]:
+                continue
             
             # 如果该类型今天已经发送过，跳过
             if alert_type in sent_types:
@@ -236,6 +253,7 @@ def get_all_alerts():
             # 按预警类型分组
             if alert_type not in alerts_by_type:
                 alerts_by_type[alert_type] = {
+                    "level": alert_level,
                     "cities": [],
                     "description": description,
                     "pubDate": pubDate
@@ -251,8 +269,8 @@ def get_all_alerts():
         print(f"获取官方预警失败: {e}")
         return {}
 
-def send_merged_alert(alert_type, alert_data):
-    """发送合并后的预警消息"""
+def send_alert(alert_type, alert_data):
+    """发送预警消息"""
     cities_text = "、".join(alert_data["cities"])
     prevention_tips = get_prevention_tips(alert_type)
     
@@ -260,8 +278,11 @@ def send_merged_alert(alert_type, alert_data):
         print(f"过滤非指定预警类型: {alert_type}")
         return
 
+    # 红色预警单独标记
+    level_text = "红色" if alert_data["level"] == "红色" else "橙色"
+    
     content = f"""【山西省气象预警紧急提醒】
-今日{alert_type}汇总
+今日{level_text}{alert_type}预警汇总
 发布时间：{alert_data['pubDate']}
 预警城市：{cities_text}
 预警详情：上述城市受天气系统影响，请注意防范。
@@ -279,9 +300,9 @@ def send_merged_alert(alert_type, alert_data):
         try:
             response = requests.post(webhook_url, json=message, timeout=10)
             response.raise_for_status()
-            print(f"合并预警推送成功: {alert_type}")
+            print(f"{level_text}{alert_type}预警推送成功")
         except Exception as e:
-            print(f"合并预警推送失败 {alert_type}: {e}")
+            print(f"{level_text}{alert_type}预警推送失败: {e}")
     
     # 标记该预警类型今天已发送
     save_alert_type_cache(alert_type)
@@ -349,14 +370,7 @@ if __name__ == "__main__":
     
     # 只在北京时间8:00-20:00之间运行所有功能
     if 8 <= now.hour <= 20:
-        # 第一部分：官方气象预警推送（每小时检查一次，同类型同一天只发1次）
-        all_alerts = get_all_alerts()
-        print(f"获取到{len(all_alerts)}种新预警")
-        for alert_type, alert_data in all_alerts.items():
-            print(f"准备推送: {alert_type}, 城市: {alert_data['cities']}")
-            send_merged_alert(alert_type, alert_data)
-
-        # 第二部分：全省未来3天预报提醒（固定每天8:00-8:59推送一次）
+        # 第一部分：全省未来3天预报提醒（固定每天8:00-8:59推送一次）
         if now.hour == 8:
             last_send = get_last_send_date()
             hit_keywords = get_province_3day_forecast()
@@ -367,5 +381,12 @@ if __name__ == "__main__":
                 print(f"已推送今日全省未来3天天气预警: {hit_keywords}")
             else:
                 print("无需要推送的全省未来3天灾害天气或今日已推送")
+        
+        # 第二部分：橙色和红色预警推送（每小时检查一次，同类型同一天只发1次）
+        all_alerts = get_all_high_level_alerts()
+        print(f"获取到{len(all_alerts)}种新的橙色/红色预警")
+        for alert_type, alert_data in all_alerts.items():
+            print(f"准备推送: {alert_data['level']}{alert_type}预警, 城市: {alert_data['cities']}")
+            send_alert(alert_type, alert_data)
     else:
         print(f"非工作时间，系统休眠中。当前北京时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
