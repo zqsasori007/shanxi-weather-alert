@@ -13,6 +13,8 @@ WEBHOOK_URLS = [
 ]
 # 防重复推送缓存文件
 CACHE_FILE = "weather_cache.txt"
+# 预警类型缓存文件（记录当天已发送的预警类型）
+ALERT_TYPE_CACHE = "alert_type_cache.txt"
 # 山西全省11个地级市未来3天预报地址
 CITY_FORECAST_URLS = [
     "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",  # 太原
@@ -39,6 +41,22 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
     return text.strip()
+
+def extract_alert_type(title):
+    """从预警标题中提取预警类型（如"大风蓝色预警"）"""
+    # 匹配"XX蓝色预警"、"XX黄色预警"、"XX橙色预警"、"XX红色预警"格式
+    match = re.search(r'([\u4e00-\u9fa5]+(蓝色|黄色|橙色|红色)预警)', title)
+    if match:
+        return match.group(1)
+    return title  # 匹配失败返回原标题
+
+def extract_city_name(title):
+    """从预警标题中只提取市级名称，不提取区县"""
+    # 匹配"山西省XX市"格式，只保留市名
+    match = re.search(r'山西省([\u4e00-\u9fa5]+市)', title)
+    if match:
+        return match.group(1).replace("市", "")
+    return "山西"  # 匹配失败返回"山西"
 
 def get_prevention_tips(title):
     """根据官方预警标题匹配4S店专属防范提示"""
@@ -98,38 +116,119 @@ def get_prevention_tips(title):
 
     return None
 
-def get_latest_alert():
-    """获取山西省最新官方气象预警"""
+def get_last_send_date():
+    """读取上次推送日期，防止同一天重复群发预报"""
+    if not os.path.exists(CACHE_FILE):
+        return ""
+    with open(CACHE_FILE, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+def save_last_send_date():
+    """写入今日日期，标记预报已推送"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        f.write(today)
+
+def get_alert_type_cache():
+    """读取当天已发送的预警类型列表"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # 如果缓存文件不存在，返回空列表
+    if not os.path.exists(ALERT_TYPE_CACHE):
+        return []
+    
+    # 读取缓存文件内容
+    with open(ALERT_TYPE_CACHE, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    
+    # 如果缓存文件为空，返回空列表
+    if not lines:
+        return []
+    
+    # 第一行是缓存日期
+    cache_date = lines[0]
+    
+    # 如果缓存日期不是今天，清空缓存并返回空列表
+    if cache_date != today:
+        with open(ALERT_TYPE_CACHE, "w", encoding="utf-8") as f:
+            f.write(today + "\n")
+        return []
+    
+    # 返回今天已发送的预警类型列表
+    return lines[1:]
+
+def save_alert_type_cache(alert_type):
+    """保存预警类型到当天缓存"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    existing_types = get_alert_type_cache()
+    
+    # 如果该类型已经存在，不重复保存
+    if alert_type in existing_types:
+        return
+    
+    # 写入缓存文件
+    with open(ALERT_TYPE_CACHE, "w", encoding="utf-8") as f:
+        f.write(today + "\n")
+        for t in existing_types:
+            f.write(t + "\n")
+        f.write(alert_type + "\n")
+
+def get_all_alerts():
+    """获取山西省所有当前有效的官方预警"""
     try:
         response = requests.get(RSS_URL, timeout=10)
         response.raise_for_status()
         root = ET.fromstring(response.content)
         channel = root.find('channel')
         items = channel.findall('item')
-        if items:
-            latest = items[0]
-            return {
-                "title": clean_text(latest.find('title').text),
-                "description": clean_text(latest.find('description').text),
-                "pubDate": clean_text(latest.find('pubDate').text)
-            }
-        return None
+        
+        alerts_by_type = {}
+        sent_types = get_alert_type_cache()
+        
+        for item in items:
+            title = clean_text(item.find('title').text)
+            description = clean_text(item.find('description').text)
+            pubDate = clean_text(item.find('pubDate').text)
+            
+            # 提取预警类型
+            alert_type = extract_alert_type(title)
+            
+            # 如果该类型今天已经发送过，跳过
+            if alert_type in sent_types:
+                continue
+            
+            # 按预警类型分组
+            if alert_type not in alerts_by_type:
+                alerts_by_type[alert_type] = {
+                    "cities": [],
+                    "description": description,
+                    "pubDate": pubDate
+                }
+            
+            # 提取市级名称并添加到列表（自动去重）
+            city_name = extract_city_name(title)
+            if city_name not in alerts_by_type[alert_type]["cities"]:
+                alerts_by_type[alert_type]["cities"].append(city_name)
+        
+        return alerts_by_type
     except Exception as e:
         print(f"获取官方预警失败: {e}")
-        return None
+        return {}
 
-def send_official_alert(alert):
-    """推送官方气象预警到企业微信"""
-    prevention_tips = get_prevention_tips(alert["title"])
+def send_merged_alert(alert_type, alert_data):
+    """发送合并后的预警消息"""
+    cities_text = "、".join(alert_data["cities"])
+    prevention_tips = get_prevention_tips(alert_type)
     
     if not prevention_tips:
-        print(f"过滤非指定官方预警类型: {alert['title']}")
+        print(f"过滤非指定预警类型: {alert_type}")
         return
 
     content = f"""【山西省气象预警紧急提醒】
-{alert['title']}
-发布时间：{alert['pubDate']}
-预警详情：{alert['description']}
+今日{alert_type}汇总
+发布时间：{alert_data['pubDate']}
+预警城市：{cities_text}
+预警详情：上述城市受天气系统影响，请注意防范。
 
 {prevention_tips}"""
 
@@ -144,22 +243,12 @@ def send_official_alert(alert):
         try:
             response = requests.post(webhook_url, json=message, timeout=10)
             response.raise_for_status()
-            print(f"官方预警推送成功到: {webhook_url}")
+            print(f"合并预警推送成功: {alert_type}")
         except Exception as e:
-            print(f"官方预警推送失败到 {webhook_url}: {e}")
-
-def get_last_send_date():
-    """读取上次推送日期，防止同一天重复群发"""
-    if not os.path.exists(CACHE_FILE):
-        return ""
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        return f.read().strip()
-
-def save_last_send_date():
-    """写入今日日期，标记已推送"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        f.write(today)
+            print(f"合并预警推送失败 {alert_type}: {e}")
+    
+    # 标记该预警类型今天已发送
+    save_alert_type_cache(alert_type)
 
 def get_province_3day_forecast():
     """抓取山西全省11个地级市未来3天的天气预报"""
@@ -221,10 +310,10 @@ if __name__ == "__main__":
     now = datetime.now()
     # 只在北京时间8:00-20:00之间运行所有功能
     if 8 <= now.hour <= 20:
-        # 第一部分：官方气象预警推送（每小时检查一次）
-        latest_alert = get_latest_alert()
-        if latest_alert:
-            send_official_alert(latest_alert)
+        # 第一部分：官方气象预警推送（每小时检查一次，同类型同一天只发1次）
+        all_alerts = get_all_alerts()
+        for alert_type, alert_data in all_alerts.items():
+            send_merged_alert(alert_type, alert_data)
 
         # 第二部分：全省未来3天预报提醒（固定每天8:00-8:59推送一次）
         if now.hour == 8:
