@@ -1,23 +1,29 @@
-name: Shanxi Weather Alert
+name: 山西东风南方天气预警
 
 on:
   schedule:
-    # 北京时间8:00-20:00每小时运行一次（UTC 0:00-12:00）
-    - cron: '0 0-12 * * *'
-  workflow_dispatch:  # 允许手动触发测试
+    # 每小时的第5分钟运行一次（UTC时间），对应北京时间每小时的第5分钟
+    - cron: '5 * * * *'
+  workflow_dispatch:      # 支持手动触发（用于测试）
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  alert:
+  weather-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-      - name: Run alert script
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: pip install requests lxml
+
+      - name: 运行天气脚本
         run: python alert.py
