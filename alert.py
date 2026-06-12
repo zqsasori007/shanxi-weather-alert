@@ -4,7 +4,8 @@
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
 功能：
 1. 每天8:00推送未来3天全省主要城市灾害天气预报（只发一次）
-2. 每小时（8:00-21:00）查询气象预警（蓝/黄/橙/红）并推送新预警（每个预警每天只发一次）
+2. 每小时（8:00-21:00）查询气象预警（蓝/黄/橙/红）并推送新预警
+   （去重规则：同一天内，相同的【预警类型+城市列表】组合只推送一次，忽略等级变化和范围扩大）
 """
 
 import requests
@@ -88,27 +89,22 @@ ALERT_CACHE_FILE = "alert_cache.json"
 
 # ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
-    """判断当前北京时间是否在 start_hour 到 end_hour 之间（包含边界）"""
+    """判断当前北京时间是否在 start_hour 到 end_hour 之间（包含 start, 不包含 end）"""
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
-    return start_hour <= now_bj.hour <= end_hour
+    return start_hour <= now_bj.hour < end_hour
 
 def get_current_beijing_date():
-    """返回当前北京时间日期字符串 YYYY-MM-DD"""
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
     return now_bj.strftime("%Y-%m-%d")
 
 def send_to_wecom(content):
-    """发送文本消息到企业微信群机器人"""
     if not WEBHOOK_URL:
         print("错误：未设置 WEBHOOK_URL")
         return False
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "msgtype": "text",
-        "text": {"content": content}
-    }
+    payload = {"msgtype": "text", "text": {"content": content}}
     try:
         resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
         if resp.status_code == 200:
@@ -123,42 +119,35 @@ def send_to_wecom(content):
 
 # ======================== 功能1：未来三天灾害天气预报 ========================
 def get_city_forecast(city_name, url):
-    """抓取单个城市未来三天的天气文本，返回出现的灾害关键词列表"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        # 查找 id="day7" 下的前3个 div（未来三天）
         day_divs = tree.xpath('//*[@id="day7"]/div[position()<=3]')
         full_text = ""
         for div in day_divs:
             text = "".join(div.itertext())
             full_text += text + " "
-        
-        # 匹配关键词
-        found = []
-        for kw in FORECAST_KEYWORDS:
-            if kw in full_text:
-                found.append(kw)
+        found = [kw for kw in FORECAST_KEYWORDS if kw in full_text]
         return list(set(found))
     except Exception as e:
         print(f"获取 {city_name} 预报失败：{e}")
-        return []
+        return None  # 返回 None 表示抓取失败
 
 def get_province_forecast():
-    """获取全省主要城市未来三天的灾害预报汇总"""
     result = {}
+    any_success = False
     for city, url in CITY_FORECAST_URLS.items():
         keywords = get_city_forecast(city, url)
+        if keywords is None:
+            continue
+        any_success = True
         if keywords:
             result[city] = keywords
-    return result
+    return result, any_success
 
 def build_forecast_message(forecast_data):
-    """根据预报数据生成文本消息"""
     if not forecast_data:
         return None
     lines = ["【山西未来三天灾害天气提醒】"]
@@ -169,7 +158,6 @@ def build_forecast_message(forecast_data):
     return "\n".join(lines)
 
 def has_forecast_sent_today():
-    """检查今天是否已经发送过预报"""
     if not os.path.exists(FORECAST_CACHE_FILE):
         return False
     with open(FORECAST_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -177,21 +165,26 @@ def has_forecast_sent_today():
     return saved_date == get_current_beijing_date()
 
 def mark_forecast_sent():
-    """标记今天预报已发送"""
     with open(FORECAST_CACHE_FILE, "w", encoding="utf-8") as f:
         f.write(get_current_beijing_date())
 
 def run_daily_forecast():
-    """每天8点执行：推送预报"""
     if has_forecast_sent_today():
         print("今日预报已发送过，跳过")
         return
     print("开始获取全省未来三天预报...")
-    forecast = get_province_forecast()
+    forecast, any_success = get_province_forecast()
+    
+    # 如果一个城市都没成功抓取，不标记已发送，留待下次重试
+    if not any_success:
+        print("所有城市预报抓取失败，本次不推送，不标记已发送")
+        return
+    
     if not forecast:
-        print("未检测到需要关注的灾害天气，不推送")
+        print("未检测到需要关注的灾害天气，但抓取成功，标记今日已发送，避免重复检查")
         mark_forecast_sent()
         return
+    
     msg = build_forecast_message(forecast)
     if msg:
         send_to_wecom(msg)
@@ -201,7 +194,6 @@ def run_daily_forecast():
 
 # ======================== 功能2：实时气象预警（每小时） ========================
 def fetch_alerts():
-    """从中国气象局接口获取山西省当前所有预警"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         resp = requests.get(ALERT_API_URL, headers=headers, timeout=10)
@@ -214,12 +206,10 @@ def fetch_alerts():
         result = []
         for alert in alerts:
             title = alert.get("headline", "")
-            # 提取预警等级（蓝黄橙红）
             level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
             if not level_match:
                 continue
             level = level_match.group(1)
-            # 提取预警类型（例如“暴雨”）
             type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
             alert_type = type_match.group(1) if type_match else "未知"
             location = alert.get("location", "")
@@ -236,7 +226,6 @@ def fetch_alerts():
         return []
 
 def convert_locations_to_cities(locations):
-    """将预警中的区县名称转换为地级市（只保留主要城市）"""
     cities = set()
     for loc in locations:
         for county, city in COUNTY_TO_CITY.items():
@@ -247,10 +236,9 @@ def convert_locations_to_cities(locations):
     return sorted(valid_cities)
 
 def group_alerts_by_type_level(alerts):
-    """将预警列表按 (类型, 等级) 分组，合并影响城市"""
     groups = {}
     for alert in alerts:
-        key = (alert["type"], alert["level"])
+        key = (alert["type"], alert["level"])  # 保留等级用于生成提示，但不用于去重签名
         if key not in groups:
             groups[key] = {
                 "type": alert["type"],
@@ -273,12 +261,11 @@ def group_alerts_by_type_level(alerts):
     return result
 
 def get_alert_signature(alert):
-    """生成预警的唯一标识（用于去重）：类型+等级+城市列表的排序后字符串"""
+    """生成去重签名：只包含预警类型和城市列表，忽略等级和范围扩大"""
     cities_str = ",".join(sorted(alert["cities"]))
-    return f"{alert['type']}_{alert['level']}_{cities_str}"
+    return f"{alert['type']}_{cities_str}"
 
 def load_alert_cache():
-    """加载当天已发送的预警签名列表"""
     if not os.path.exists(ALERT_CACHE_FILE):
         return {"date": "", "signatures": []}
     try:
@@ -291,7 +278,6 @@ def load_alert_cache():
         return {"date": "", "signatures": []}
 
 def save_alert_cache(signatures):
-    """保存今天已发送的预警签名列表"""
     data = {
         "date": get_current_beijing_date(),
         "signatures": signatures
@@ -300,7 +286,6 @@ def save_alert_cache(signatures):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_prevention_tips(alert_type, level):
-    """根据预警类型和等级生成防范提示（针对汽车销售公司）"""
     base = "请各单位"
     if "暴雨" in alert_type:
         if level in ["橙色", "红色"]:
@@ -327,7 +312,6 @@ def get_prevention_tips(alert_type, level):
         return base + "关注天气变化，做好相应防范措施。"
 
 def build_alert_message(alert):
-    """生成单条预警的文本消息"""
     level_text = alert["level"]
     cities_text = "、".join(alert["cities"])
     tip = get_prevention_tips(alert["type"], alert["level"])
@@ -338,7 +322,6 @@ def build_alert_message(alert):
     return msg
 
 def run_alert_check():
-    """每小时执行：检查新预警并推送（每天每个唯一预警只推送一次）"""
     print("开始检查气象预警...")
     alerts = fetch_alerts()
     if not alerts:
@@ -353,12 +336,12 @@ def run_alert_check():
     
     new_alerts = []
     for alert in grouped:
-        sig = get_alert_signature(alert)
+        sig = get_alert_signature(alert)  # 签名不含等级
         if sig not in sent_signatures:
             new_alerts.append(alert)
             sent_signatures.add(sig)
         else:
-            print(f"跳过已发送预警：{alert['type']}{alert['level']} - {alert['cities']}")
+            print(f"跳过已发送预警类型：{alert['type']} 影响城市 {alert['cities']} (等级 {alert['level']} 变化或范围扩大均不重复发送)")
     
     if not new_alerts:
         print("没有需要推送的新预警")
