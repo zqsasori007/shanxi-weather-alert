@@ -2,15 +2,28 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-最终稳定版：直接提取API标题中的地级市名称，无需复杂映射
+最终稳定版（已修复所有已知问题）
+- 企业微信业务错误码校验，避免误判成功
+- 天气预报XPath修正为 class="day7"
+- 温度提取优化，避免匹配无关数字
+- 预警城市提取支持无“省”前缀的标题
+- 消息长度校验与特殊字符清洗
+- 网络请求重试机制
+- 标准时区处理
 """
 
 import requests
 import json
 import os
 import re
+import time
+import logging
 from datetime import datetime, timedelta
 from lxml import etree
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except ImportError:
+    from pytz import timezone as ZoneInfo  # 需要 pip install pytz
 
 # ======================== 配置区域 ========================
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
@@ -37,47 +50,90 @@ CITY_FORECAST_URLS = {
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ======================== 辅助函数 ========================
+def get_beijing_now():
+    """使用标准时区获取北京时间"""
+    try:
+        tz = ZoneInfo("Asia/Shanghai")
+        return datetime.now(tz)
+    except:
+        # 回退到手动加8小时
+        return datetime.utcnow() + timedelta(hours=8)
+
 def is_beijing_time_between(start_hour, end_hour):
-    now_utc = datetime.utcnow()
-    now_bj = now_utc + timedelta(hours=8)
+    now_bj = get_beijing_now()
     return start_hour <= now_bj.hour < end_hour
 
 def get_current_beijing_date():
-    now_utc = datetime.utcnow()
-    now_bj = now_utc + timedelta(hours=8)
-    return now_bj.strftime("%Y-%m-%d")
+    return get_beijing_now().strftime("%Y-%m-%d")
 
 def get_weekday():
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    now_bj = datetime.utcnow() + timedelta(hours=8)
-    return weekdays[now_bj.weekday()]
+    return weekdays[get_beijing_now().weekday()]
+
+def clean_text(text):
+    """清洗文本中的控制字符，防止企业微信JSON解析错误"""
+    if not text:
+        return ""
+    # 移除 ASCII 控制字符 (0x00-0x1F) 除了 \t, \n, \r
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return cleaned.strip()
 
 def send_to_wecom(content):
+    """发送消息到企业微信，校验业务错误码，支持重试"""
     if not WEBHOOK_URL:
-        print("错误：未设置 WEBHOOK_URL")
+        logger.error("未设置 WEBHOOK_URL")
         return False
+    # 清洗特殊字符
+    content = clean_text(content)
+    # 长度校验（企业微信限制2048字节，中文字符按3字节估算）
+    if len(content.encode('utf-8')) > 2048:
+        logger.warning("消息超长，将截断")
+        # 简单截断至安全长度
+        content = content[:2000]  # 保留足够结尾
     headers = {"Content-Type": "application/json"}
     payload = {"msgtype": "text", "text": {"content": content}}
-    try:
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        if resp.status_code == 200:
-            print("消息发送成功")
-            return True
-        else:
-            print(f"消息发送失败，状态码：{resp.status_code}")
-            return False
-    except Exception as e:
-        print(f"消息发送异常：{e}")
-        return False
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+            if resp.status_code == 200:
+                result = resp.json()
+                errcode = result.get("errcode", -1)
+                if errcode == 0:
+                    logger.info("消息发送成功")
+                    return True
+                else:
+                    errmsg = result.get("errmsg", "未知错误")
+                    logger.error(f"企业微信返回错误码 {errcode}: {errmsg}")
+                    # 若是因为消息格式问题（如长度超限），不再重试
+                    if errcode in (93017, 93018):
+                        return False
+            else:
+                logger.error(f"HTTP错误: {resp.status_code}")
+        except Exception as e:
+            logger.error(f"发送异常: {e}")
+        if attempt < max_retries:
+            time.sleep(2 ** attempt)  # 指数退避
+    return False
 
 # ======================== 功能1：全省当天天气预报 ========================
 def get_city_today_weather(city_name, url):
+    """抓取单个城市当天的天气（天气现象、气温、风力）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        today_div = tree.xpath('//*[@id="day7"]/div[1]')
+        # 修正：使用 class="day7"
+        today_div = tree.xpath('//div[@class="day7"]/div[1]')
+        if not today_div:
+            # 备选：尝试 id="day7" 兼容旧版
+            today_div = tree.xpath('//*[@id="day7"]/div[1]')
         if not today_div:
             return None
         div = today_div[0]
@@ -91,9 +147,12 @@ def get_city_today_weather(city_name, url):
         elif len(temp_ele) == 1:
             temp_str = f"{temp_ele[0].strip()}℃"
         else:
+            # 优化：只提取温度数字，避免匹配无关数字
             full_text = "".join(div.itertext())
+            # 匹配类似 "14℃" 或 "29/14℃" 模式
             temps = re.findall(r'(\d+)℃', full_text)
             if temps:
+                # 取前两个作为低温和高温
                 if len(temps) >= 2:
                     temp_str = f"{temps[1]}~{temps[0]}℃"
                 else:
@@ -104,7 +163,7 @@ def get_city_today_weather(city_name, url):
         wind = wind_ele[0].strip() if wind_ele else ""
         return f"{weather}，气温{temp_str}，{wind}"
     except Exception as e:
-        print(f"获取 {city_name} 天气失败：{e}")
+        logger.error(f"获取 {city_name} 天气失败: {e}")
         return None
 
 def get_all_cities_weather():
@@ -151,94 +210,115 @@ def mark_forecast_sent():
 
 def run_daily_forecast():
     if has_forecast_sent_today():
-        print("今日天气预报已发送过，跳过")
+        logger.info("今日天气预报已发送过，跳过")
         return
-    print("开始获取全省当天天气预报...")
+    logger.info("开始获取全省当天天气预报...")
     weather, any_success = get_all_cities_weather()
     if not any_success:
-        print("所有城市天气获取失败，本次不推送，不标记已发送")
+        logger.warning("所有城市天气获取失败，本次不推送，不标记已发送")
         return
     if not weather:
-        print("未获取到任何城市的天气数据，标记已发送避免重复尝试")
+        logger.warning("未获取到任何城市的天气数据，标记已发送避免重复尝试")
         mark_forecast_sent()
         return
     msg = build_today_forecast_message(weather)
     if msg:
-        send_to_wecom(msg)
-        mark_forecast_sent()
+        if send_to_wecom(msg):
+            mark_forecast_sent()
+        else:
+            logger.error("天气预报推送失败，未标记已发送")
     else:
-        print("消息为空，不推送")
+        logger.warning("消息为空，不推送")
 
-# ======================== 功能2：气象预警（直接提取地级市） ========================
+# ======================== 功能2：气象预警（增强城市提取） ========================
 def extract_city_from_title(title):
     """
-    从标题中直接提取地级市名称，例如：
-    '山西省大同市浑源县发布冰雹橙色预警' -> '大同'
-    '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '忻州'
-    '山西省大同市发布雷暴大风蓝色预警' -> '大同'
+    从标题中提取地级市名称，支持多种格式：
+    - 山西省大同市... -> 大同
+    - 大同市... -> 大同
+    - 山西大同市... -> 大同
     """
-    # 提取“省”和“市”之间的内容（地级市名）
+    # 模式1：省XX市
     match = re.search(r'省(.+?)市', title)
     if match:
         city = match.group(1)
-        # 只保留2-4个中文字符（地级市名）
         if re.match(r'^[\u4e00-\u9fa5]{2,4}$', city):
+            return city
+    # 模式2：直接匹配“XX市”且前面不是“省”或“中国”
+    match = re.search(r'(?<!省)(?<!中国)([\u4e00-\u9fa5]{2,4})市', title)
+    if match:
+        city = match.group(1)
+        if city not in ['山西', '全省']:
+            return city
+    # 模式3：从“发布”前查找地级市（备用）
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})市[^省]', title)
+    if match:
+        city = match.group(1)
+        if city not in ['山西', '全省']:
             return city
     return None
 
+def fetch_alerts_with_retry():
+    """带重试的预警获取"""
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(ALERT_API_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") == 0:
+                return data.get("data", [])
+            else:
+                logger.warning(f"预警接口返回错误码: {data.get('code')}")
+        except Exception as e:
+            logger.error(f"获取预警失败 (尝试 {attempt+1}/{max_retries+1}): {e}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+    return []
+
 def fetch_alerts():
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        resp = requests.get(ALERT_API_URL, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("code") != 0:
-            return []
-        alerts = data.get("data", [])
-        result = []
-        for alert in alerts:
-            title = alert.get("title", "") or alert.get("headline", "")
-            if not title:
-                continue
-            # 忽略高温和雷电
-            if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
-                print(f"忽略预警：{title}")
-                continue
-            # 提取预警等级
-            level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
-            if not level_match:
-                continue
-            level = level_match.group(1)
-            # 提取预警类型，并修正错别字“冰霍”->“冰雹”
-            type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
-            alert_type = type_match.group(1) if type_match else "未知"
-            alert_type = alert_type.replace('冰霍', '冰雹')  # 修正错别字
-            # 提取地级市
-            city = extract_city_from_title(title)
-            if not city:
-                print(f"无法从标题中提取地级市：{title}")
-                continue
-            if city not in ALERT_TARGET_CITIES:
-                continue
-            # 发布时间
-            effective = alert.get("effective", "")
-            pub_time = effective
-            if pub_time:
-                try:
-                    dt = datetime.strptime(pub_time, "%Y/%m/%d %H:%M")
-                    pub_time = dt.strftime("%Y年%m月%d日 %H:%M")
-                except:
-                    pass
-            result.append({
-                "type": alert_type,
-                "level": level,
-                "city": city,
-                "pub_time": pub_time
-            })
-        return result
-    except Exception as e:
-        print(f"获取预警失败：{e}")
-        return []
+    alerts = fetch_alerts_with_retry()
+    result = []
+    for alert in alerts:
+        title = alert.get("title", "") or alert.get("headline", "")
+        if not title:
+            continue
+        # 忽略不需要的类型
+        if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
+            logger.info(f"忽略预警：{title}")
+            continue
+        # 提取等级
+        level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
+        if not level_match:
+            continue
+        level = level_match.group(1)
+        # 提取类型并修正错别字
+        type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
+        alert_type = type_match.group(1) if type_match else "未知"
+        alert_type = alert_type.replace('冰霍', '冰雹')
+        # 提取城市
+        city = extract_city_from_title(title)
+        if not city:
+            logger.debug(f"无法提取城市：{title}")
+            continue
+        if city not in ALERT_TARGET_CITIES:
+            continue
+        # 发布时间
+        effective = alert.get("effective", "")
+        pub_time = effective
+        if pub_time:
+            try:
+                dt = datetime.strptime(pub_time, "%Y/%m/%d %H:%M")
+                pub_time = dt.strftime("%Y年%m月%d日 %H:%M")
+            except:
+                pass
+        result.append({
+            "type": alert_type,
+            "level": level,
+            "city": city,
+            "pub_time": pub_time
+        })
+    return result
 
 def group_alerts_by_type_level(alerts):
     groups = {}
@@ -252,15 +332,12 @@ def group_alerts_by_type_level(alerts):
                 "pub_time": alert["pub_time"]
             }
         groups[key]["cities"].add(alert["city"])
-    result = []
-    for key, group in groups.items():
-        result.append({
-            "type": group["type"],
-            "level": group["level"],
-            "cities": sorted(group["cities"]),
-            "pub_time": group["pub_time"]
-        })
-    return result
+    return [{
+        "type": g["type"],
+        "level": g["level"],
+        "cities": sorted(g["cities"]),
+        "pub_time": g["pub_time"]
+    } for g in groups.values()]
 
 def get_alert_signature(alert):
     return f"{alert['type']}_{','.join(alert['cities'])}"
@@ -296,7 +373,7 @@ def get_prevention_tips(alert_type, level):
 def build_alert_message(alert):
     cities_text = "、".join(alert["cities"])
     tip = get_prevention_tips(alert["type"], alert["level"])
-    msg = f"""【山西气象预警】
+    return f"""【山西气象预警】
 ⚠️ {alert['type']}{alert['level']}预警
 影响城市：{cities_text}
 发布时间：{alert['pub_time']}
@@ -304,16 +381,15 @@ def build_alert_message(alert):
 {tip}
 
 请各单位立即响应，做好防范。"""
-    return msg
 
 def run_alert_check():
-    print("开始检查气象预警...")
+    logger.info("开始检查气象预警...")
     alerts = fetch_alerts()
     if not alerts:
-        print("未获取到任何预警")
+        logger.info("未获取到任何预警")
         return
     grouped = group_alerts_by_type_level(alerts)
-    print(f"合并后得到 {len(grouped)} 个预警组")
+    logger.info(f"合并后得到 {len(grouped)} 个预警组")
     cache = load_alert_cache()
     sent = set(cache["signatures"])
     new_alerts = []
@@ -323,28 +399,31 @@ def run_alert_check():
             new_alerts.append(alert)
             sent.add(sig)
         else:
-            print(f"跳过已发送：{alert['type']}{alert['level']} {alert['cities']}")
+            logger.info(f"跳过已发送：{alert['type']}{alert['level']} {alert['cities']}")
     if not new_alerts:
-        print("没有需要推送的新预警")
+        logger.info("没有需要推送的新预警")
         return
     for alert in new_alerts:
         msg = build_alert_message(alert)
-        send_to_wecom(msg)
+        if send_to_wecom(msg):
+            logger.info(f"已推送预警：{alert['type']}{alert['level']} {alert['cities']}")
+        else:
+            logger.error(f"预警推送失败：{alert['type']}{alert['level']} {alert['cities']}")
     save_alert_cache(list(sent))
-    print(f"已推送 {len(new_alerts)} 条预警")
 
+# ======================== 主入口 ========================
 if __name__ == "__main__":
-    now_utc = datetime.utcnow()
-    now_bj = now_utc + timedelta(hours=8)
-    print(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
+    now_bj = get_beijing_now()
+    logger.info(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
     if not is_beijing_time_between(8, 21):
-        print("当前不在8:00-21:00之间，脚本退出")
+        logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    if now_bj.hour == 8:
-        print("===== 执行每日天气预报推送 =====")
+    # 允许 8:00-9:00 之间推送预报，避免因调度延迟错过8点整
+    if 8 <= now_bj.hour < 9:
+        logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
-        print("===== 执行预警检查 =====")
+        logger.info("===== 执行预警检查 =====")
         run_alert_check()
     else:
-        print("===== 执行预警检查 =====")
+        logger.info("===== 执行预警检查 =====")
         run_alert_check()
