@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-每天8:00推送全省主要城市【当天】天气预报（天气+气温+风力）
-每小时检查气象预警并推送
+- 每天8:00推送全省11个地级市当天天气预报
+- 每小时检查气象预警，仅推送太原、晋中、吕梁、阳泉、忻州、长治、运城7个城市的预警
 """
 
 import requests
@@ -17,6 +17,16 @@ from lxml import etree
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
 ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 
+# 全省11个地级市（天气预报用）
+ALL_CITIES = [
+    "太原", "大同", "朔州", "忻州", "吕梁", "晋中",
+    "阳泉", "长治", "晋城", "临汾", "运城"
+]
+
+# 只关注预警的城市（预警过滤用）
+ALERT_TARGET_CITIES = ["太原", "晋中", "吕梁", "阳泉", "忻州", "长治", "运城"]
+
+# 所有城市的预报URL
 CITY_FORECAST_URLS = {
     "太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",
     "大同": "http://www.nmc.cn/publish/forecast/ASX/datong.html",
@@ -31,6 +41,7 @@ CITY_FORECAST_URLS = {
     "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
 }
 
+# 区县 → 地级市 映射表（完整）
 COUNTY_TO_CITY = {
     "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
     "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
@@ -94,7 +105,7 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-# ======================== 功能1：当天天气预报 ========================
+# ======================== 功能1：全省当天天气预报 ========================
 def get_city_today_weather(city_name, url):
     """抓取单个城市当天的天气（天气现象、气温、风力）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -132,10 +143,14 @@ def get_city_today_weather(city_name, url):
         print(f"获取 {city_name} 天气失败：{e}")
         return None
 
-def get_province_today_weather():
+def get_all_cities_weather():
+    """获取全省所有城市的当天天气"""
     result = {}
     any_success = False
-    for city, url in CITY_FORECAST_URLS.items():
+    for city in ALL_CITIES:
+        url = CITY_FORECAST_URLS.get(city)
+        if not url:
+            continue
         detail = get_city_today_weather(city, url)
         if detail is None:
             continue
@@ -149,8 +164,10 @@ def build_today_forecast_message(weather_data):
     today = get_current_beijing_date()
     weekday = get_weekday()
     lines = [f"【山西省天气预报】{today}（{weekday}） 发布", ""]
-    for city, detail in weather_data.items():
-        lines.append(f"📍 {city}：{detail}；")
+    for city in ALL_CITIES:  # 按ALL_CITIES顺序显示
+        if city in weather_data:
+            lines.append(f"📍 {city}：{weather_data[city]}；")
+    # 最后一行以句号结尾
     if len(lines) > 2:
         last_line = lines[-1].rstrip("；") + "。"
         lines[-1] = last_line
@@ -175,7 +192,7 @@ def run_daily_forecast():
         print("今日天气预报已发送过，跳过")
         return
     print("开始获取全省当天天气预报...")
-    weather, any_success = get_province_today_weather()
+    weather, any_success = get_all_cities_weather()
     if not any_success:
         print("所有城市天气获取失败，本次不推送，不标记已发送")
         return
@@ -190,7 +207,7 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：实时气象预警 ========================
+# ======================== 功能2：气象预警（仅关注指定城市） ========================
 def fetch_alerts():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -224,13 +241,14 @@ def fetch_alerts():
         return []
 
 def convert_locations_to_cities(locations):
+    """将区县名称转换为地级市，并只保留预警目标城市"""
     cities = set()
     for loc in locations:
         for county, city in COUNTY_TO_CITY.items():
-            if county in loc:
+            if county in loc and city in ALERT_TARGET_CITIES:
                 cities.add(city)
                 break
-    return sorted([c for c in cities if c in CITY_FORECAST_URLS])
+    return sorted(cities)
 
 def group_alerts_by_type_level(alerts):
     groups = {}
