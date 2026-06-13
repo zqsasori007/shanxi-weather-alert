@@ -3,7 +3,8 @@
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
 - 每天8:00推送全省11个地级市当天天气预报
-- 每小时检查气象预警，仅推送太原、晋中、吕梁、阳泉、忻州、长治、运城7个城市的预警
+- 每小时检查气象预警，只推送指定7个城市的预警（排除高温和雷电）
+- 相同类型+等级的预警合并为一条消息发送
 """
 
 import requests
@@ -25,6 +26,9 @@ ALL_CITIES = [
 
 # 只关注预警的城市（预警过滤用）
 ALERT_TARGET_CITIES = ["太原", "晋中", "吕梁", "阳泉", "忻州", "长治", "运城"]
+
+# 不需要推送的预警类型（关键词列表）
+IGNORE_ALERT_TYPES = ["高温", "雷电"]   # 忽略高温和雷电
 
 # 所有城市的预报URL
 CITY_FORECAST_URLS = {
@@ -206,18 +210,14 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：气象预警（仅关注指定城市） ========================
+# ======================== 功能2：气象预警（合并同类预警 + 排除高温雷电） ========================
 def extract_county_from_title(title):
-    """从标题中提取区县名称，例如 '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '繁峙县' 或 '繁峙'"""
-    # 尝试匹配 '...市...县' 或 '...县' 或 '...区'
-    # 优先提取 '县' 前的部分
+    """从标题中提取区县名称，例如 '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '繁峙'"""
     match = re.search(r'([\u4e00-\u9fa5]+[市县区])', title)
     if match:
         county = match.group(1)
-        # 去除末尾的'市'、'县'、'区'，以便匹配映射表中的键（映射表中通常不带行政区划后缀）
         county = county.rstrip('市县区')
         return county
-    # 备用：如果没匹配到，尝试从headline中提取
     return None
 
 def fetch_alerts():
@@ -234,26 +234,29 @@ def fetch_alerts():
             title = alert.get("title", "") or alert.get("headline", "")
             if not title:
                 continue
-            # 提取预警等级
+            # 忽略不需要的预警类型（高温、雷电）
+            should_ignore = False
+            for ignore_keyword in IGNORE_ALERT_TYPES:
+                if ignore_keyword in title:
+                    should_ignore = True
+                    break
+            if should_ignore:
+                print(f"忽略预警：{title}")
+                continue
             level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
             if not level_match:
                 continue
             level = level_match.group(1)
-            # 提取预警类型
             type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
             alert_type = type_match.group(1) if type_match else "未知"
-            # 提取区县名称
             county = extract_county_from_title(title)
             if not county:
-                # 如果提取失败，尝试从headline中再取一次
                 headline = alert.get("headline", "")
                 county = extract_county_from_title(headline)
-            # 发布时间
             effective = alert.get("effective", "")
             pub_time = effective
             if pub_time:
                 try:
-                    # 格式 "2026/06/13 14:54"
                     dt = datetime.strptime(pub_time, "%Y/%m/%d %H:%M")
                     pub_time = dt.strftime("%Y年%m月%d日 %H:%M")
                 except:
@@ -261,7 +264,7 @@ def fetch_alerts():
             result.append({
                 "type": alert_type,
                 "level": level,
-                "location": county,      # 保存提取到的区县名
+                "location": county,
                 "pub_time": pub_time
             })
         return result
@@ -275,8 +278,6 @@ def convert_locations_to_cities(locations):
     for loc in locations:
         if not loc:
             continue
-        # 直接匹配映射表（映射表的键是区县名，可能带后缀也可能不带）
-        # 例如 loc='繁峙' 或 '繁峙县'，映射表中有 '繁峙'，需要先去除后缀
         loc_clean = loc.rstrip('市县区')
         for county, city in COUNTY_TO_CITY.items():
             if county == loc_clean or county == loc:
@@ -284,7 +285,6 @@ def convert_locations_to_cities(locations):
                     cities.add(city)
                 break
         else:
-            # 如果没找到，尝试模糊匹配（包含关系）
             for county, city in COUNTY_TO_CITY.items():
                 if county in loc or loc in county:
                     if city in ALERT_TARGET_CITIES:
@@ -293,21 +293,33 @@ def convert_locations_to_cities(locations):
     return sorted(cities)
 
 def group_alerts_by_type_level(alerts):
+    """先按 (类型, 等级) 分组，然后合并城市列表"""
     groups = {}
     for alert in alerts:
         key = (alert["type"], alert["level"])
         if key not in groups:
-            groups[key] = {"type": alert["type"], "level": alert["level"], "locations": [], "pub_time": alert["pub_time"]}
+            groups[key] = {
+                "type": alert["type"],
+                "level": alert["level"],
+                "locations": [],
+                "pub_time": alert["pub_time"]  # 使用第一个预警的时间
+            }
         groups[key]["locations"].append(alert["location"])
     result = []
     for key, group in groups.items():
         cities = convert_locations_to_cities(group["locations"])
         if not cities:
             continue
-        result.append({"type": group["type"], "level": group["level"], "cities": cities, "pub_time": group["pub_time"]})
+        result.append({
+            "type": group["type"],
+            "level": group["level"],
+            "cities": cities,
+            "pub_time": group["pub_time"]
+        })
     return result
 
 def get_alert_signature(alert):
+    """去重签名：类型 + 城市列表（排序后）"""
     return f"{alert['type']}_{','.join(sorted(alert['cities']))}"
 
 def load_alert_cache():
@@ -339,12 +351,16 @@ def get_prevention_tips(alert_type, level):
     return base + "关注天气变化，做好防范。"
 
 def build_alert_message(alert):
+    """生成合并后的预警消息"""
+    level_text = alert["level"]
+    cities_text = "、".join(alert["cities"])
+    tip = get_prevention_tips(alert["type"], alert["level"])
     msg = f"""【山西气象预警】
-⚠️ {alert['type']}{alert['level']}预警
-影响城市：{'、'.join(alert['cities'])}
+⚠️ {alert['type']}{level_text}预警
+影响城市：{cities_text}
 发布时间：{alert['pub_time']}
 
-{get_prevention_tips(alert['type'], alert['level'])}
+{tip}
 
 请各单位立即响应，做好防范。"""
     return msg
@@ -355,8 +371,9 @@ def run_alert_check():
     if not alerts:
         print("未获取到任何预警")
         return
+    # 先按 (类型, 等级) 分组合并城市
     grouped = group_alerts_by_type_level(alerts)
-    print(f"获取到 {len(grouped)} 个有效预警组")
+    print(f"合并后得到 {len(grouped)} 个预警组")
     cache = load_alert_cache()
     sent = set(cache["signatures"])
     new_alerts = []
@@ -371,7 +388,8 @@ def run_alert_check():
         print("没有需要推送的新预警")
         return
     for alert in new_alerts:
-        send_to_wecom(build_alert_message(alert))
+        msg = build_alert_message(alert)
+        send_to_wecom(msg)
     save_alert_cache(list(sent))
     print(f"已推送 {len(new_alerts)} 条预警")
 
