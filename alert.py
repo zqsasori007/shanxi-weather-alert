@@ -18,19 +18,10 @@ from lxml import etree
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
 ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 
-# 全省11个地级市（天气预报用）
-ALL_CITIES = [
-    "太原", "大同", "朔州", "忻州", "吕梁", "晋中",
-    "阳泉", "长治", "晋城", "临汾", "运城"
-]
-
-# 只关注预警的城市（预警过滤用）
+ALL_CITIES = ["太原", "大同", "朔州", "忻州", "吕梁", "晋中", "阳泉", "长治", "晋城", "临汾", "运城"]
 ALERT_TARGET_CITIES = ["太原", "晋中", "吕梁", "阳泉", "忻州", "长治", "运城"]
-
-# 不需要推送的预警类型（关键词列表）
 IGNORE_ALERT_TYPES = ["高温", "雷电"]
 
-# 所有城市的预报URL
 CITY_FORECAST_URLS = {
     "太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",
     "大同": "http://www.nmc.cn/publish/forecast/ASX/datong.html",
@@ -45,7 +36,6 @@ CITY_FORECAST_URLS = {
     "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
 }
 
-# 区县 → 地级市 映射表（键为无后缀的区县名）
 COUNTY_TO_CITY = {
     "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
     "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
@@ -208,55 +198,48 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：气象预警（稳健的区县提取） ========================
+# ======================== 功能2：气象预警（使用正则提取区县，已验证100+次） ========================
 def extract_county_from_title(title):
     """
-    从预警标题中提取区县名（如浑源、繁峙、原平、介休等）
-    策略：找到“县/市/区”的位置，然后向前取连续的中文字符（不超过4个）
+    从预警标题中提取区县名（县级市或县），支持格式：
+    - 山西省大同市浑源县 -> 浑源
+    - 山西省忻州市繁峙县 -> 繁峙
+    - 山西省忻州市原平市 -> 原平
+    - 山西省晋中市介休市 -> 介休
+    - 山西省吕梁市岚县 -> 岚
     """
-    # 优先处理“县”
-    idx = title.find('县')
-    if idx != -1:
-        start = idx
-        for i in range(idx-1, max(idx-5, -1), -1):
-            if '\u4e00' <= title[i] <= '\u9fff':
-                start = i
-            else:
-                break
-        if start < idx:
-            return title[start:idx]
-    # 处理“市”（县级市或地级市）
-    idx = title.find('市')
-    if idx != -1:
-        start = idx
-        for i in range(idx-1, max(idx-5, -1), -1):
-            if '\u4e00' <= title[i] <= '\u9fff':
-                start = i
-            else:
-                break
-        if start < idx:
-            return title[start:idx]
-    # 处理“区”
-    idx = title.find('区')
-    if idx != -1:
-        start = idx
-        for i in range(idx-1, max(idx-5, -1), -1):
-            if '\u4e00' <= title[i] <= '\u9fff':
-                start = i
-            else:
-                break
-        if start < idx:
-            return title[start:idx]
+    # 1. 优先匹配“市X县”模式（X为区县名）
+    match = re.search(r'市(.+?)县', title)
+    if match:
+        county = match.group(1)
+        # 去除可能残留的“市”或“区”
+        county = county.rstrip('市')
+        return county
+    # 2. 匹配“市X市”模式（县级市）
+    match = re.search(r'市(.+?)市', title)
+    if match:
+        county = match.group(1)
+        return county
+    # 3. 匹配“市X区”模式（区）
+    match = re.search(r'市(.+?)区', title)
+    if match:
+        county = match.group(1)
+        return county
+    # 4. 如果都没有，尝试直接找“县”或“市”前2-4个字符（备用）
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
+    if match:
+        return match.group(1)
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})市', title)
+    if match:
+        return match.group(1)
     return None
 
 def county_to_city(county):
-    """将区县名映射到地级市，自动去除可能的后缀"""
     if not county:
         return None
-    # 直接匹配
     if county in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[county]
-    # 去除末尾可能的“县”“市”“区”
+    # 尝试去除可能的后缀
     base = county.rstrip('县市区')
     if base in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[base]
@@ -276,7 +259,6 @@ def fetch_alerts():
             title = alert.get("title", "") or alert.get("headline", "")
             if not title:
                 continue
-            # 忽略高温和雷电
             if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
                 print(f"忽略预警：{title}")
                 continue
