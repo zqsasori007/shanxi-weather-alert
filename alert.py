@@ -28,7 +28,7 @@ ALL_CITIES = [
 ALERT_TARGET_CITIES = ["太原", "晋中", "吕梁", "阳泉", "忻州", "长治", "运城"]
 
 # 不需要推送的预警类型（关键词列表）
-IGNORE_ALERT_TYPES = ["高温", "雷电"]   # 忽略高温和雷电
+IGNORE_ALERT_TYPES = ["高温", "雷电"]
 
 # 所有城市的预报URL
 CITY_FORECAST_URLS = {
@@ -208,14 +208,31 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：气象预警（以地级市为单位合并，排除高温雷电） ========================
+# ======================== 功能2：气象预警（修复区县提取） ========================
 def extract_county_from_title(title):
-    """从标题中提取区县名称（不带市/县/区后缀）"""
-    match = re.search(r'([\u4e00-\u9fa5]+[市县区])', title)
+    """
+    从预警标题中提取区县名称（纯区县名，不带省市前缀）
+    例如：
+        '山西省大同市浑源县发布冰雹橙色预警' -> '浑源'
+        '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '繁峙'
+        '山西省晋中市介休市发布雷暴大风黄色预警' -> '介休'
+    """
+    # 匹配“XXX县”中的“XXX”（县）
+    match = re.search(r'([\u4e00-\u9fa5]+)县', title)
     if match:
-        county = match.group(1)
-        county = county.rstrip('市县区')
-        return county
+        return match.group(1)
+    # 匹配“XXX市”中的“XXX”（市，针对县级市如原平市）
+    match = re.search(r'([\u4e00-\u9fa5]+)市', title)
+    if match:
+        # 排除“山西省”中的“省”字干扰，这里市可能是地级市，但县级市也符合
+        # 如果匹配到“大同市”，会返回“大同”，这也是我们需要的（地级市）
+        # 但我们需要的是区县级，例如“原平市”返回“原平”
+        # 注意：有些标题如“山西省大同市发布预警”会返回“大同”，这正好是我们需要的，因为大同本身就是地级市
+        return match.group(1)
+    # 匹配“XXX区”中的“XXX”（区）
+    match = re.search(r'([\u4e00-\u9fa5]+)区', title)
+    if match:
+        return match.group(1)
     return None
 
 def county_to_city(county):
@@ -225,7 +242,7 @@ def county_to_city(county):
     # 直接匹配
     if county in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[county]
-    # 尝试去掉末尾的“县”、“市”、“区”再匹配（但上面已经去掉了，这里保留）
+    # 尝试去掉可能的“县”字后缀（但上面已经去掉了）
     return None
 
 def fetch_alerts():
@@ -254,14 +271,12 @@ def fetch_alerts():
             alert_type = type_match.group(1) if type_match else "未知"
             county = extract_county_from_title(title)
             if not county:
-                headline = alert.get("headline", "")
-                county = extract_county_from_title(headline)
-            # 将区县转为地级市
+                print(f"无法从标题中提取区县名称：{title}")
+                continue
             city = county_to_city(county)
             if not city:
                 print(f"无法映射区县 {county} 到地级市，预警标题：{title}")
                 continue
-            # 只保留目标城市
             if city not in ALERT_TARGET_CITIES:
                 continue
             effective = alert.get("effective", "")
@@ -275,7 +290,7 @@ def fetch_alerts():
             result.append({
                 "type": alert_type,
                 "level": level,
-                "city": city,           # 直接保存地级市，不再保存区县
+                "city": city,
                 "pub_time": pub_time
             })
         return result
@@ -284,7 +299,6 @@ def fetch_alerts():
         return []
 
 def group_alerts_by_type_level(alerts):
-    """按 (类型, 等级) 分组，合并城市列表（地级市）"""
     groups = {}
     for alert in alerts:
         key = (alert["type"], alert["level"])
@@ -301,13 +315,12 @@ def group_alerts_by_type_level(alerts):
         result.append({
             "type": group["type"],
             "level": group["level"],
-            "cities": sorted(group["cities"]),  # 地级市列表，已去重
+            "cities": sorted(group["cities"]),
             "pub_time": group["pub_time"]
         })
     return result
 
 def get_alert_signature(alert):
-    """去重签名：类型 + 城市列表（排序后）"""
     return f"{alert['type']}_{','.join(alert['cities'])}"
 
 def load_alert_cache():
