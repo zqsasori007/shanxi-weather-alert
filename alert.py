@@ -2,10 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-功能：
-1. 每天8:00推送未来3天全省主要城市灾害天气预报（只发一次）
-2. 每小时（8:00-21:00）查询气象预警（蓝/黄/橙/红）并推送新预警
-   （去重规则：同一天内，相同的【预警类型+城市列表】组合只推送一次，忽略等级变化和范围扩大）
+【临时测试版】强制执行预报推送，用于调试抓取问题
 """
 
 import requests
@@ -16,13 +13,10 @@ from datetime import datetime, timedelta
 from lxml import etree
 
 # ======================== 配置区域 ========================
-# 请替换成您自己的企业微信群机器人 Webhook 地址
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
 
-# 预警接口（山西省，adcode=14）
 ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 
-# 山西主要城市（地级市）的 NMC 预报页面
 CITY_FORECAST_URLS = {
     "太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",
     "大同": "http://www.nmc.cn/publish/forecast/ASX/datong.html",
@@ -37,7 +31,6 @@ CITY_FORECAST_URLS = {
     "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
 }
 
-# 预报需要关注的气象灾害关键词（基于4S店防范需求）
 FORECAST_KEYWORDS = [
     "中雨", "大雨", "暴雨", "大暴雨",
     "中雪", "大雪", "暴雪",
@@ -45,51 +38,36 @@ FORECAST_KEYWORDS = [
     "高温", "雷电", "雷阵雨"
 ]
 
-# 区县 → 地级市 映射表（只保留用户关注的11个城市）
 COUNTY_TO_CITY = {
-    # 太原
     "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
     "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
-    # 大同
     "大同": "大同", "平城": "大同", "云冈": "大同", "云州": "大同", "新荣": "大同",
     "阳高": "大同", "天镇": "大同", "广灵": "大同", "灵丘": "大同", "浑源": "大同", "左云": "大同",
-    # 朔州
     "朔州": "朔州", "朔城": "朔州", "平鲁": "朔州", "山阴": "朔州", "应县": "朔州", "右玉": "朔州", "怀仁": "朔州",
-    # 忻州
     "忻州": "忻州", "忻府": "忻州", "定襄": "忻州", "五台": "忻州", "代县": "忻州", "繁峙": "忻州",
     "宁武": "忻州", "静乐": "忻州", "神池": "忻州", "五寨": "忻州", "岢岚": "忻州", "河曲": "忻州",
     "保德": "忻州", "偏关": "忻州", "原平": "忻州",
-    # 吕梁
     "吕梁": "吕梁", "离石": "吕梁", "文水": "吕梁", "交城": "吕梁", "兴县": "吕梁", "临县": "吕梁",
     "柳林": "吕梁", "石楼": "吕梁", "岚县": "吕梁", "方山": "吕梁", "中阳": "吕梁", "交口": "吕梁",
     "孝义": "吕梁", "汾阳": "吕梁",
-    # 晋中
     "晋中": "晋中", "榆次": "晋中", "太谷": "晋中", "祁县": "晋中", "平遥": "晋中", "灵石": "晋中",
     "介休": "晋中", "榆社": "晋中", "左权": "晋中", "和顺": "晋中", "昔阳": "晋中", "寿阳": "晋中",
-    # 阳泉
     "阳泉": "阳泉", "城区": "阳泉", "矿区": "阳泉", "郊区": "阳泉", "平定": "阳泉", "盂县": "阳泉",
-    # 长治
     "长治": "长治", "潞州": "长治", "上党": "长治", "屯留": "长治", "潞城": "长治",
     "襄垣": "长治", "平顺": "长治", "黎城": "长治", "壶关": "长治", "长子": "长治", "武乡": "长治", "沁县": "长治", "沁源": "长治",
-    # 晋城
     "晋城": "晋城", "城区": "晋城", "沁水": "晋城", "阳城": "晋城", "陵川": "晋城", "泽州": "晋城", "高平": "晋城",
-    # 临汾
     "临汾": "临汾", "尧都": "临汾", "曲沃": "临汾", "翼城": "临汾", "襄汾": "临汾", "洪洞": "临汾",
     "古县": "临汾", "安泽": "临汾", "浮山": "临汾", "吉县": "临汾", "乡宁": "临汾", "大宁": "临汾",
     "隰县": "临汾", "永和": "临汾", "蒲县": "临汾", "汾西": "临汾", "侯马": "临汾", "霍州": "临汾",
-    # 运城
     "运城": "运城", "盐湖": "运城", "临猗": "运城", "万荣": "运城", "闻喜": "运城", "稷山": "运城",
     "新绛": "运城", "绛县": "运城", "垣曲": "运城", "夏县": "运城", "平陆": "运城", "芮城": "运城",
     "永济": "运城", "河津": "运城"
 }
 
-# 缓存文件
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
-# ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
-    """判断当前北京时间是否在 start_hour 到 end_hour 之间（包含 start, 不包含 end）"""
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
     return start_hour <= now_bj.hour < end_hour
@@ -117,7 +95,6 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-# ======================== 功能1：未来三天灾害天气预报 ========================
 def get_city_forecast(city_name, url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
@@ -130,7 +107,6 @@ def get_city_forecast(city_name, url):
             text = "".join(div.itertext())
             full_text += text + " "
         
-        # 调试输出：打印每个城市抓取到的文本片段（前500字符）
         print(f"[DEBUG] {city_name} 抓取文本预览: {full_text[:500]}...")
         
         found = [kw for kw in FORECAST_KEYWORDS if kw in full_text]
@@ -176,29 +152,29 @@ def mark_forecast_sent():
         f.write(get_current_beijing_date())
 
 def run_daily_forecast():
-    if has_forecast_sent_today():
-        print("今日预报已发送过，跳过")
-        return
+    # 临时测试：忽略今日是否已发送，强制运行
+    # if has_forecast_sent_today():
+    #     print("今日预报已发送过，跳过")
+    #     return
     print("开始获取全省未来三天预报...")
     forecast, any_success = get_province_forecast()
     
     if not any_success:
-        print("所有城市预报抓取失败，本次不推送，不标记已发送")
+        print("所有城市预报抓取失败，本次不推送")
         return
     
     if not forecast:
-        print("未检测到需要关注的灾害天气，但抓取成功，标记今日已发送，避免重复检查")
-        mark_forecast_sent()
+        print("未检测到需要关注的灾害天气")
         return
     
     msg = build_forecast_message(forecast)
     if msg:
         send_to_wecom(msg)
-        mark_forecast_sent()
+        # 临时测试：不标记已发送，以便多次测试
+        # mark_forecast_sent()
     else:
         print("预报消息为空，不推送")
 
-# ======================== 功能2：实时气象预警（每小时） ========================
 def fetch_alerts():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -359,7 +335,6 @@ def run_alert_check():
     save_alert_cache(list(sent_signatures))
     print(f"已推送 {len(new_alerts)} 条新预警")
 
-# ======================== 主入口 ========================
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -367,15 +342,13 @@ if __name__ == "__main__":
     
     print(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    if not is_beijing_time_between(8, 21):
-        print("当前不在8:00-21:00之间，脚本退出")
-        exit(0)
+    # 临时测试：强制运行预报推送（忽略时间）
+    print("===== 临时测试：强制执行每日预报推送 =====")
+    run_daily_forecast()
     
-    if current_hour == 8:
-        print("===== 执行每日预报推送 =====")
-        run_daily_forecast()
+    # 如果也在8-21点之间，继续预警检查
+    if is_beijing_time_between(8, 21):
         print("===== 执行预警检查 =====")
         run_alert_check()
     else:
-        print("===== 执行预警检查 =====")
-        run_alert_check()
+        print("当前不在8-21点，跳过预警检查")
