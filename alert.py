@@ -151,7 +151,6 @@ def build_today_forecast_message(weather_data):
     lines = [f"【山西省天气预报】{today}（{weekday}） 发布", ""]
     for city, detail in weather_data.items():
         lines.append(f"📍 {city}：{detail}；")
-    # 最后一行以句号结尾
     if len(lines) > 2:
         last_line = lines[-1].rstrip("；") + "。"
         lines[-1] = last_line
@@ -324,7 +323,7 @@ if __name__ == "__main__":
     if not is_beijing_time_between(8, 21):
         print("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    if current_hour == 8: 
+    if now_bj.hour == 8:
         print("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
         print("===== 执行预警检查 =====")
