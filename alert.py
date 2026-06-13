@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-最终稳定版
+最终稳定版：直接提取API标题中的地级市名称，无需复杂映射
 """
 
 import requests
@@ -12,7 +12,7 @@ import re
 from datetime import datetime, timedelta
 from lxml import etree
 
-# ======================== 配置 ========================
+# ======================== 配置区域 ========================
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
 ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 
@@ -34,36 +34,9 @@ CITY_FORECAST_URLS = {
     "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
 }
 
-COUNTY_TO_CITY = {
-    "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
-    "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
-    "大同": "大同", "平城": "大同", "云冈": "大同", "云州": "大同", "新荣": "大同",
-    "阳高": "大同", "天镇": "大同", "广灵": "大同", "灵丘": "大同", "浑源": "大同", "左云": "大同",
-    "朔州": "朔州", "朔城": "朔州", "平鲁": "朔州", "山阴": "朔州", "应县": "朔州", "右玉": "朔州", "怀仁": "朔州",
-    "忻州": "忻州", "忻府": "忻州", "定襄": "忻州", "五台": "忻州", "代县": "忻州", "繁峙": "忻州",
-    "宁武": "忻州", "静乐": "忻州", "神池": "忻州", "五寨": "忻州", "岢岚": "忻州", "河曲": "忻州",
-    "保德": "忻州", "偏关": "忻州", "原平": "忻州",
-    "吕梁": "吕梁", "离石": "吕梁", "文水": "吕梁", "交城": "吕梁", "兴县": "吕梁", "临县": "吕梁",
-    "柳林": "吕梁", "石楼": "吕梁", "岚": "吕梁", "方山": "吕梁", "中阳": "吕梁", "交口": "吕梁",
-    "孝义": "吕梁", "汾阳": "吕梁",
-    "晋中": "晋中", "榆次": "晋中", "太谷": "晋中", "祁县": "晋中", "平遥": "晋中", "灵石": "晋中",
-    "介休": "晋中", "榆社": "晋中", "左权": "晋中", "和顺": "晋中", "昔阳": "晋中", "寿阳": "晋中",
-    "阳泉": "阳泉", "城区": "阳泉", "矿区": "阳泉", "郊区": "阳泉", "平定": "阳泉", "盂县": "阳泉",
-    "长治": "长治", "潞州": "长治", "上党": "长治", "屯留": "长治", "潞城": "长治",
-    "襄垣": "长治", "平顺": "长治", "黎城": "长治", "壶关": "长治", "长子": "长治", "武乡": "长治", "沁县": "长治", "沁源": "长治",
-    "晋城": "晋城", "城区": "晋城", "沁水": "晋城", "阳城": "晋城", "陵川": "晋城", "泽州": "晋城", "高平": "晋城",
-    "临汾": "临汾", "尧都": "临汾", "曲沃": "临汾", "翼城": "临汾", "襄汾": "临汾", "洪洞": "临汾",
-    "古县": "临汾", "安泽": "临汾", "浮山": "临汾", "吉县": "临汾", "乡宁": "临汾", "大宁": "临汾",
-    "隰县": "临汾", "永和": "临汾", "蒲县": "临汾", "汾西": "临汾", "侯马": "临汾", "霍州": "临汾",
-    "运城": "运城", "盐湖": "运城", "临猗": "运城", "万荣": "运城", "闻喜": "运城", "稷山": "运城",
-    "新绛": "运城", "绛县": "运城", "垣曲": "运城", "夏县": "运城", "平陆": "运城", "芮城": "运城",
-    "永济": "运城", "河津": "运城"
-}
-
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
-# ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -81,6 +54,7 @@ def get_weekday():
 
 def send_to_wecom(content):
     if not WEBHOOK_URL:
+        print("错误：未设置 WEBHOOK_URL")
         return False
     headers = {"Content-Type": "application/json"}
     payload = {"msgtype": "text", "text": {"content": content}}
@@ -96,9 +70,9 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-# ======================== 天气预报 ========================
+# ======================== 功能1：全省当天天气预报 ========================
 def get_city_today_weather(city_name, url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
@@ -111,14 +85,19 @@ def get_city_today_weather(city_name, url):
         weather = weather_ele[0].strip() if weather_ele else ""
         temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
         if len(temp_ele) >= 2:
-            temp_str = f"{temp_ele[1].strip()}~{temp_ele[0].strip()}℃"
+            temp_high = temp_ele[0].strip()
+            temp_low = temp_ele[1].strip()
+            temp_str = f"{temp_low}~{temp_high}℃"
         elif len(temp_ele) == 1:
             temp_str = f"{temp_ele[0].strip()}℃"
         else:
             full_text = "".join(div.itertext())
             temps = re.findall(r'(\d+)℃', full_text)
             if temps:
-                temp_str = f"{temps[-1]}~{temps[0]}℃" if len(temps)>=2 else f"{temps[0]}℃"
+                if len(temps) >= 2:
+                    temp_str = f"{temps[1]}~{temps[0]}℃"
+                else:
+                    temp_str = f"{temps[0]}℃"
             else:
                 temp_str = "?"
         wind_ele = div.xpath('.//p[@class="win"]/text()')
@@ -152,7 +131,8 @@ def build_today_forecast_message(weather_data):
         if city in weather_data:
             lines.append(f"📍 {city}：{weather_data[city]}；")
     if len(lines) > 2:
-        lines[-1] = lines[-1].rstrip("；") + "。"
+        last_line = lines[-1].rstrip("；") + "。"
+        lines[-1] = last_line
     lines.append("")
     lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查等应急工作；提醒员工及合作单位做好人员及财产安全防护。")
     lines.append("📢 数据来源：中央气象台")
@@ -161,11 +141,12 @@ def build_today_forecast_message(weather_data):
 def has_forecast_sent_today():
     if not os.path.exists(FORECAST_CACHE_FILE):
         return False
-    with open(FORECAST_CACHE_FILE, "r") as f:
-        return f.read().strip() == get_current_beijing_date()
+    with open(FORECAST_CACHE_FILE, "r", encoding="utf-8") as f:
+        saved_date = f.read().strip()
+    return saved_date == get_current_beijing_date()
 
 def mark_forecast_sent():
-    with open(FORECAST_CACHE_FILE, "w") as f:
+    with open(FORECAST_CACHE_FILE, "w", encoding="utf-8") as f:
         f.write(get_current_beijing_date())
 
 def run_daily_forecast():
@@ -175,10 +156,10 @@ def run_daily_forecast():
     print("开始获取全省当天天气预报...")
     weather, any_success = get_all_cities_weather()
     if not any_success:
-        print("所有城市天气获取失败，本次不推送")
+        print("所有城市天气获取失败，本次不推送，不标记已发送")
         return
     if not weather:
-        print("未获取到天气数据，标记已发送")
+        print("未获取到任何城市的天气数据，标记已发送避免重复尝试")
         mark_forecast_sent()
         return
     msg = build_today_forecast_message(weather)
@@ -186,46 +167,23 @@ def run_daily_forecast():
         send_to_wecom(msg)
         mark_forecast_sent()
     else:
-        print("消息为空")
+        print("消息为空，不推送")
 
-# ======================== 预警处理（核心修复） ========================
+# ======================== 功能2：气象预警（直接提取地级市） ========================
 def extract_city_from_title(title):
     """
-    提取预警中的区县名或地级市名。
-    优先提取“县”前的部分，找到最近的“市”或“省”作为起始。
-    如果没有“县”，则提取“市”前的部分（地级市）。
+    从标题中直接提取地级市名称，例如：
+    '山西省大同市浑源县发布冰雹橙色预警' -> '大同'
+    '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '忻州'
+    '山西省大同市发布雷暴大风蓝色预警' -> '大同'
     """
-    # 查找“县”
-    idx = title.find('县')
-    if idx != -1:
-        # 向前找最近的“市”或“省”
-        start = idx
-        for i in range(idx-1, -1, -1):
-            if title[i] in ('市', '省'):
-                start = i+1
-                break
-        if start < idx:
-            return title[start:idx]
-    # 没有县，查找“市”（地级市直接发布）
-    idx = title.find('市')
-    if idx != -1:
-        start = idx
-        for i in range(idx-1, -1, -1):
-            if title[i] in ('省', '市'):
-                start = i+1
-                break
-        if start < idx:
-            return title[start:idx]
-    return None
-
-def city_to_target(city_name):
-    """将提取的城市名转换为目标地级市（若在映射表中则转换，否则视为地级市本身）"""
-    if not city_name:
-        return None
-    if city_name in COUNTY_TO_CITY:
-        return COUNTY_TO_CITY[city_name]
-    if city_name in ALERT_TARGET_CITIES:
-        return city_name
+    # 提取“省”和“市”之间的内容（地级市名）
+    match = re.search(r'省(.+?)市', title)
+    if match:
+        city = match.group(1)
+        # 只保留2-4个中文字符（地级市名）
+        if re.match(r'^[\u4e00-\u9fa5]{2,4}$', city):
+            return city
     return None
 
 def fetch_alerts():
@@ -242,23 +200,27 @@ def fetch_alerts():
             title = alert.get("title", "") or alert.get("headline", "")
             if not title:
                 continue
+            # 忽略高温和雷电
             if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
                 print(f"忽略预警：{title}")
                 continue
+            # 提取预警等级
             level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
             if not level_match:
                 continue
             level = level_match.group(1)
+            # 提取预警类型，并修正错别字“冰霍”->“冰雹”
             type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
             alert_type = type_match.group(1) if type_match else "未知"
-            city_name = extract_city_from_title(title)
-            if not city_name:
-                print(f"无法从标题提取城市：{title}")
+            alert_type = alert_type.replace('冰霍', '冰雹')  # 修正错别字
+            # 提取地级市
+            city = extract_city_from_title(title)
+            if not city:
+                print(f"无法从标题中提取地级市：{title}")
                 continue
-            target = city_to_target(city_name)
-            if not target:
-                print(f"城市 {city_name} 不在目标列表中，标题：{title}")
+            if city not in ALERT_TARGET_CITIES:
                 continue
+            # 发布时间
             effective = alert.get("effective", "")
             pub_time = effective
             if pub_time:
@@ -270,7 +232,7 @@ def fetch_alerts():
             result.append({
                 "type": alert_type,
                 "level": level,
-                "city": target,
+                "city": city,
                 "pub_time": pub_time
             })
         return result
@@ -283,9 +245,22 @@ def group_alerts_by_type_level(alerts):
     for alert in alerts:
         key = (alert["type"], alert["level"])
         if key not in groups:
-            groups[key] = {"type": alert["type"], "level": alert["level"], "cities": set(), "pub_time": alert["pub_time"]}
+            groups[key] = {
+                "type": alert["type"],
+                "level": alert["level"],
+                "cities": set(),
+                "pub_time": alert["pub_time"]
+            }
         groups[key]["cities"].add(alert["city"])
-    return [{"type": g["type"], "level": g["level"], "cities": sorted(g["cities"]), "pub_time": g["pub_time"]} for g in groups.values()]
+    result = []
+    for key, group in groups.items():
+        result.append({
+            "type": group["type"],
+            "level": group["level"],
+            "cities": sorted(group["cities"]),
+            "pub_time": group["pub_time"]
+        })
+    return result
 
 def get_alert_signature(alert):
     return f"{alert['type']}_{','.join(alert['cities'])}"
@@ -294,7 +269,7 @@ def load_alert_cache():
     if not os.path.exists(ALERT_CACHE_FILE):
         return {"date": "", "signatures": []}
     try:
-        with open(ALERT_CACHE_FILE, "r") as f:
+        with open(ALERT_CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if data.get("date") != get_current_beijing_date():
             return {"date": "", "signatures": []}
@@ -303,8 +278,8 @@ def load_alert_cache():
         return {"date": "", "signatures": []}
 
 def save_alert_cache(signatures):
-    with open(ALERT_CACHE_FILE, "w") as f:
-        json.dump({"date": get_current_beijing_date(), "signatures": signatures}, f)
+    with open(ALERT_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"date": get_current_beijing_date(), "signatures": signatures}, f, ensure_ascii=False, indent=2)
 
 def get_prevention_tips(alert_type, level):
     base = "📌 山西东风南方温馨提示："
@@ -319,12 +294,14 @@ def get_prevention_tips(alert_type, level):
     return base + "关注天气变化，做好防范。"
 
 def build_alert_message(alert):
+    cities_text = "、".join(alert["cities"])
+    tip = get_prevention_tips(alert["type"], alert["level"])
     msg = f"""【山西气象预警】
 ⚠️ {alert['type']}{alert['level']}预警
-影响城市：{'、'.join(alert['cities'])}
+影响城市：{cities_text}
 发布时间：{alert['pub_time']}
 
-{get_prevention_tips(alert['type'], alert['level'])}
+{tip}
 
 请各单位立即响应，做好防范。"""
     return msg
@@ -351,11 +328,11 @@ def run_alert_check():
         print("没有需要推送的新预警")
         return
     for alert in new_alerts:
-        send_to_wecom(build_alert_message(alert))
+        msg = build_alert_message(alert)
+        send_to_wecom(msg)
     save_alert_cache(list(sent))
     print(f"已推送 {len(new_alerts)} 条预警")
 
-# ======================== 主入口 ========================
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
