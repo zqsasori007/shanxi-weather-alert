@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-【临时测试版】强制执行预报推送，用于调试抓取问题
+功能：
+1. 每天8:00推送全省主要城市未来3天天气预报（含气温、天气现象）
+2. 每小时（8:00-21:00）查询气象预警并推送（每个预警每天只发一次）
 """
 
 import requests
@@ -13,10 +15,13 @@ from datetime import datetime, timedelta
 from lxml import etree
 
 # ======================== 配置区域 ========================
+# 请替换成您自己的企业微信群机器人 Webhook 地址
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
 
+# 预警接口（山西省，adcode=14）
 ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 
+# 山西主要城市（地级市）的 NMC 预报页面
 CITY_FORECAST_URLS = {
     "太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",
     "大同": "http://www.nmc.cn/publish/forecast/ASX/datong.html",
@@ -31,13 +36,7 @@ CITY_FORECAST_URLS = {
     "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
 }
 
-FORECAST_KEYWORDS = [
-    "中雨", "大雨", "暴雨", "大暴雨",
-    "中雪", "大雪", "暴雪",
-    "大风", "雷暴大风", "冰雹",
-    "高温", "雷电", "雷阵雨"
-]
-
+# 区县 → 地级市 映射表
 COUNTY_TO_CITY = {
     "太原": "太原", "小店": "太原", "迎泽": "太原", "杏花岭": "太原", "尖草坪": "太原",
     "万柏林": "太原", "晋源": "太原", "清徐": "太原", "阳曲": "太原", "娄烦": "太原", "古交": "太原",
@@ -64,9 +63,11 @@ COUNTY_TO_CITY = {
     "永济": "运城", "河津": "运城"
 }
 
+# 缓存文件
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
+# ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -95,49 +96,82 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-def get_city_forecast(city_name, url):
+# ======================== 功能1：未来三天天气预报 ========================
+def get_city_weather(city_name, url):
+    """抓取单个城市未来三天的天气现象和气温，返回字符串列表（每天一行）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
         day_divs = tree.xpath('//*[@id="day7"]/div[position()<=3]')
-        full_text = ""
+        result = []
         for div in day_divs:
-            text = "".join(div.itertext())
-            full_text += text + " "
-        
-        print(f"[DEBUG] {city_name} 抓取文本预览: {full_text[:500]}...")
-        
-        found = [kw for kw in FORECAST_KEYWORDS if kw in full_text]
-        return list(set(found))
+            # 提取日期（从标题获取）
+            date_ele = div.xpath('.//h3/text()')
+            date_str = date_ele[0].strip() if date_ele else ""
+            # 提取天气现象
+            weather_ele = div.xpath('.//p[@class="wea"]/text()')
+            weather = weather_ele[0].strip() if weather_ele else ""
+            # 提取温度（最高/最低）
+            temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
+            if len(temp_ele) >= 2:
+                temp_high = temp_ele[0].strip()
+                temp_low = temp_ele[1].strip()
+                temp_text = f"{temp_high}/{temp_low}℃"
+            elif len(temp_ele) == 1:
+                temp_text = f"{temp_ele[0].strip()}℃"
+            else:
+                # 备用提取：从文本中匹配数字
+                full_text = "".join(div.itertext())
+                temps = re.findall(r'(\d+)℃', full_text)
+                if temps:
+                    if len(temps) >= 2:
+                        temp_text = f"{temps[0]}/{temps[1]}℃"
+                    else:
+                        temp_text = f"{temps[0]}℃"
+                else:
+                    temp_text = "?"
+            # 组合：日期 天气 温度
+            if date_str:
+                line = f"{date_str} {weather} {temp_text}"
+            else:
+                line = f"{weather} {temp_text}"
+            result.append(line)
+        return result
     except Exception as e:
-        print(f"获取 {city_name} 预报失败：{e}")
+        print(f"获取 {city_name} 天气失败：{e}")
         return None
 
-def get_province_forecast():
+def get_province_weather():
     result = {}
     any_success = False
     for city, url in CITY_FORECAST_URLS.items():
-        keywords = get_city_forecast(city, url)
-        if keywords is None:
+        weathers = get_city_weather(city, url)
+        if weathers is None:
             continue
         any_success = True
-        if keywords:
-            result[city] = keywords
-            print(f"[DEBUG] {city} 匹配到关键词: {keywords}")
+        if weathers:
+            result[city] = weathers
         else:
-            print(f"[DEBUG] {city} 未匹配到任何关键词")
+            print(f"{city} 未获取到有效天气")
     return result, any_success
 
-def build_forecast_message(forecast_data):
-    if not forecast_data:
+def build_forecast_message(weather_data):
+    """生成天气预报文本消息，格式专业"""
+    if not weather_data:
         return None
-    lines = ["【山西未来三天灾害天气提醒】"]
-    for city, keywords in forecast_data.items():
-        unique_kws = sorted(set(keywords))
-        lines.append(f"{city}：{', '.join(unique_kws)}")
-    lines.append("\n⚠️ 请各单位提前做好车辆防护、排水检查、广告牌加固、防暑降温等工作。")
+    today = get_current_beijing_date()
+    # 计算未来三天的日期范围
+    lines = [f"【山西未来三天天气预报】{today} 发布"]
+    lines.append("")
+    for city, days in weather_data.items():
+        # days 是长度为3的列表，例如 ["06/13 小雨 15℃", "06/14 多云 20℃", "06/15 晴 25℃"]
+        forecast_str = " | ".join(days)
+        lines.append(f"📍 {city}：{forecast_str}")
+    lines.append("")
+    lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查、防暑降温等工作。")
+    lines.append("📢 数据来源：中央气象台")
     return "\n".join(lines)
 
 def has_forecast_sent_today():
@@ -152,29 +186,29 @@ def mark_forecast_sent():
         f.write(get_current_beijing_date())
 
 def run_daily_forecast():
-    # 临时测试：忽略今日是否已发送，强制运行
-    # if has_forecast_sent_today():
-    #     print("今日预报已发送过，跳过")
-    #     return
-    print("开始获取全省未来三天预报...")
-    forecast, any_success = get_province_forecast()
+    if has_forecast_sent_today():
+        print("今日天气预报已发送过，跳过")
+        return
+    print("开始获取全省未来三天天气预报...")
+    weather, any_success = get_province_weather()
     
     if not any_success:
-        print("所有城市预报抓取失败，本次不推送")
+        print("所有城市天气获取失败，本次不推送，不标记已发送")
         return
     
-    if not forecast:
-        print("未检测到需要关注的灾害天气")
+    if not weather:
+        print("未获取到任何城市的天气数据，标记已发送避免重复尝试")
+        mark_forecast_sent()
         return
     
-    msg = build_forecast_message(forecast)
+    msg = build_forecast_message(weather)
     if msg:
         send_to_wecom(msg)
-        # 临时测试：不标记已发送，以便多次测试
-        # mark_forecast_sent()
+        mark_forecast_sent()
     else:
-        print("预报消息为空，不推送")
+        print("消息为空，不推送")
 
+# ======================== 功能2：实时气象预警 ========================
 def fetch_alerts():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -196,6 +230,13 @@ def fetch_alerts():
             alert_type = type_match.group(1) if type_match else "未知"
             location = alert.get("location", "")
             pub_time = alert.get("effective", "")
+            # 格式化发布时间
+            if pub_time:
+                try:
+                    dt = datetime.strptime(pub_time, "%Y-%m-%d %H:%M:%S")
+                    pub_time = dt.strftime("%Y年%m月%d日 %H:%M")
+                except:
+                    pass
             result.append({
                 "type": alert_type,
                 "level": level,
@@ -267,39 +308,44 @@ def save_alert_cache(signatures):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_prevention_tips(alert_type, level):
-    base = "请各单位"
+    """专业防范提示（针对汽车销售公司）"""
+    base = "📌 山西东风南方温馨提示："
     if "暴雨" in alert_type:
         if level in ["橙色", "红色"]:
-            return base + "立即将露天展车转移至室内，无法转移的用防雨布遮盖；检查排水系统；暂停户外试驾。"
+            return base + "立即将露天展车转移至室内，无法转移的用防雨布遮盖；检查排水系统，清理排水沟；暂停户外试驾。"
         else:
-            return base + "提前转移低洼处车辆，清理排水口，注意观察雨势变化。"
+            return base + "提前转移低洼处车辆，清理排水口，注意观察雨势变化；准备沙袋等防汛物资。"
     elif "大风" in alert_type or "雷暴大风" in alert_type:
         if level in ["橙色", "红色"]:
-            return base + "立即加固户外广告牌、易拉宝；停止户外作业；车辆停放远离大树和建筑边缘。"
+            return base + "立即加固户外广告牌、易拉宝、遮阳棚；停止户外作业；车辆停放远离大树、建筑边缘和临时搭建物。"
         else:
-            return base + "检查户外设施稳固情况，提醒员工注意高空坠物。"
+            return base + "检查户外设施稳固情况，提醒员工注意高空坠物；必要时暂停试驾。"
     elif "冰雹" in alert_type:
-        return base + "立即将所有露天车辆转移至室内或覆盖防雹车衣；人员进入室内躲避。"
+        return base + "立即将所有露天车辆转移至室内或覆盖防雹车衣；人员进入室内躲避；关闭门窗。"
     elif "雪" in alert_type:
         if "暴雪" in alert_type or "大雪" in alert_type:
-            return base + "检查屋顶承重，及时清理积雪；准备除雪工具；提醒员工行车安全。"
+            return base + "检查屋顶承重，及时清理积雪；准备除雪工具和融雪剂；提醒员工行车安全。"
         else:
-            return base + "注意路面湿滑，减少户外活动。"
+            return base + "注意路面湿滑，减少户外活动；车辆行驶保持安全距离。"
     elif "高温" in alert_type:
-        return base + "注意展厅空调提前开启，准备防暑药品；检查车辆电瓶和轮胎，避免自燃。"
+        return base + "展厅空调提前开启，准备防暑药品（藿香正气水、风油精）；检查车辆电瓶和轮胎，避免自燃；提醒客户注意防晒。"
     elif "雷电" in alert_type:
-        return base + "暂停户外试驾和作业；关闭不必要的电器；人员进入室内，远离金属门窗。"
+        return base + "暂停户外试驾和作业；关闭不必要的电器；人员进入室内，远离金属门窗和裸露线缆。"
     else:
-        return base + "关注天气变化，做好相应防范措施。"
+        return base + "关注天气变化，做好相应防范措施，确保人员和财产安全。"
 
 def build_alert_message(alert):
     level_text = alert["level"]
     cities_text = "、".join(alert["cities"])
     tip = get_prevention_tips(alert["type"], alert["level"])
     msg = f"""【山西气象预警】
-{alert['type']}{level_text}预警：{cities_text}
-（发布时间：{alert['pub_time']}）
-{tip}"""
+⚠️ {alert['type']}{level_text}预警
+影响城市：{cities_text}
+发布时间：{alert['pub_time']}
+
+{tip}
+
+请各子公司、分公司立即响应，做好防范。"""
     return msg
 
 def run_alert_check():
@@ -322,7 +368,7 @@ def run_alert_check():
             new_alerts.append(alert)
             sent_signatures.add(sig)
         else:
-            print(f"跳过已发送预警类型：{alert['type']} 影响城市 {alert['cities']} (等级 {alert['level']} 变化或范围扩大均不重复发送)")
+            print(f"跳过已发送预警：{alert['type']}{alert['level']} 影响 {alert['cities']}")
     
     if not new_alerts:
         print("没有需要推送的新预警")
@@ -335,6 +381,7 @@ def run_alert_check():
     save_alert_cache(list(sent_signatures))
     print(f"已推送 {len(new_alerts)} 条新预警")
 
+# ======================== 主入口 ========================
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -342,13 +389,15 @@ if __name__ == "__main__":
     
     print(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 临时测试：强制运行预报推送（忽略时间）
-    print("===== 临时测试：强制执行每日预报推送 =====")
-    run_daily_forecast()
+    if not is_beijing_time_between(8, 21):
+        print("当前不在8:00-21:00之间，脚本退出")
+        exit(0)
     
-    # 如果也在8-21点之间，继续预警检查
-    if is_beijing_time_between(8, 21):
+    if current_hour == 8:
+        print("===== 执行每日天气预报推送 =====")
+        run_daily_forecast()
         print("===== 执行预警检查 =====")
         run_alert_check()
     else:
-        print("当前不在8-21点，跳过预警检查")
+        print("===== 执行预警检查 =====")
+        run_alert_check()
