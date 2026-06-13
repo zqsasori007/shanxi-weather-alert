@@ -91,7 +91,7 @@ ALERT_CACHE_FILE = "alert_cache.json"
 def is_beijing_time_between(start_hour, end_hour):
     """判断当前北京时间是否在 start_hour 到 end_hour 之间（包含 start, 不包含 end）"""
     now_utc = datetime.utcnow()
-    now_bj = now_utc + timedelta(hours=8)
+    now_bj = now_utc + timedelta(hours=8)   # 关键：加8小时得到北京时间
     return start_hour <= now_bj.hour < end_hour
 
 def get_current_beijing_date():
@@ -175,7 +175,6 @@ def run_daily_forecast():
     print("开始获取全省未来三天预报...")
     forecast, any_success = get_province_forecast()
     
-    # 如果一个城市都没成功抓取，不标记已发送，留待下次重试
     if not any_success:
         print("所有城市预报抓取失败，本次不推送，不标记已发送")
         return
@@ -336,7 +335,7 @@ def run_alert_check():
     
     new_alerts = []
     for alert in grouped:
-        sig = get_alert_signature(alert)  # 签名不含等级
+        sig = get_alert_signature(alert)
         if sig not in sent_signatures:
             new_alerts.append(alert)
             sent_signatures.add(sig)
@@ -356,11 +355,16 @@ def run_alert_check():
 
 # ======================== 主入口 ========================
 if __name__ == "__main__":
+    # 先获取北京时间
+    now_utc = datetime.utcnow()
+    now_bj = now_utc + timedelta(hours=8)
+    current_hour = now_bj.hour
+    
+    print(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
+    
     if not is_beijing_time_between(8, 21):
         print("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    
-    current_hour = (datetime.utcnow() + timedelta(hours=8)).hour
     
     if current_hour == 8:
         print("===== 执行每日预报推送 =====")
