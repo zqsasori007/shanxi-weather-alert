@@ -164,10 +164,9 @@ def build_today_forecast_message(weather_data):
     today = get_current_beijing_date()
     weekday = get_weekday()
     lines = [f"【山西省天气预报】{today}（{weekday}） 发布", ""]
-    for city in ALL_CITIES:  # 按ALL_CITIES顺序显示
+    for city in ALL_CITIES:
         if city in weather_data:
             lines.append(f"📍 {city}：{weather_data[city]}；")
-    # 最后一行以句号结尾
     if len(lines) > 2:
         last_line = lines[-1].rstrip("；") + "。"
         lines[-1] = last_line
@@ -208,6 +207,19 @@ def run_daily_forecast():
         print("消息为空，不推送")
 
 # ======================== 功能2：气象预警（仅关注指定城市） ========================
+def extract_county_from_title(title):
+    """从标题中提取区县名称，例如 '山西省忻州市繁峙县发布雷暴大风蓝色预警' -> '繁峙县' 或 '繁峙'"""
+    # 尝试匹配 '...市...县' 或 '...县' 或 '...区'
+    # 优先提取 '县' 前的部分
+    match = re.search(r'([\u4e00-\u9fa5]+[市县区])', title)
+    if match:
+        county = match.group(1)
+        # 去除末尾的'市'、'县'、'区'，以便匹配映射表中的键（映射表中通常不带行政区划后缀）
+        county = county.rstrip('市县区')
+        return county
+    # 备用：如果没匹配到，尝试从headline中提取
+    return None
+
 def fetch_alerts():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -219,35 +231,65 @@ def fetch_alerts():
         alerts = data.get("data", [])
         result = []
         for alert in alerts:
-            title = alert.get("headline", "")
+            title = alert.get("title", "") or alert.get("headline", "")
+            if not title:
+                continue
+            # 提取预警等级
             level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
             if not level_match:
                 continue
             level = level_match.group(1)
+            # 提取预警类型
             type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
             alert_type = type_match.group(1) if type_match else "未知"
-            location = alert.get("location", "")
-            pub_time = alert.get("effective", "")
+            # 提取区县名称
+            county = extract_county_from_title(title)
+            if not county:
+                # 如果提取失败，尝试从headline中再取一次
+                headline = alert.get("headline", "")
+                county = extract_county_from_title(headline)
+            # 发布时间
+            effective = alert.get("effective", "")
+            pub_time = effective
             if pub_time:
                 try:
-                    dt = datetime.strptime(pub_time, "%Y-%m-%d %H:%M:%S")
+                    # 格式 "2026/06/13 14:54"
+                    dt = datetime.strptime(pub_time, "%Y/%m/%d %H:%M")
                     pub_time = dt.strftime("%Y年%m月%d日 %H:%M")
                 except:
                     pass
-            result.append({"type": alert_type, "level": level, "location": location, "pub_time": pub_time})
+            result.append({
+                "type": alert_type,
+                "level": level,
+                "location": county,      # 保存提取到的区县名
+                "pub_time": pub_time
+            })
         return result
     except Exception as e:
         print(f"获取预警失败：{e}")
         return []
 
 def convert_locations_to_cities(locations):
-    """将区县名称转换为地级市，并只保留预警目标城市"""
+    """将区县名称列表转换为地级市，并只保留预警目标城市"""
     cities = set()
     for loc in locations:
+        if not loc:
+            continue
+        # 直接匹配映射表（映射表的键是区县名，可能带后缀也可能不带）
+        # 例如 loc='繁峙' 或 '繁峙县'，映射表中有 '繁峙'，需要先去除后缀
+        loc_clean = loc.rstrip('市县区')
         for county, city in COUNTY_TO_CITY.items():
-            if county in loc and city in ALERT_TARGET_CITIES:
-                cities.add(city)
+            if county == loc_clean or county == loc:
+                if city in ALERT_TARGET_CITIES:
+                    cities.add(city)
                 break
+        else:
+            # 如果没找到，尝试模糊匹配（包含关系）
+            for county, city in COUNTY_TO_CITY.items():
+                if county in loc or loc in county:
+                    if city in ALERT_TARGET_CITIES:
+                        cities.add(city)
+                        break
     return sorted(cities)
 
 def group_alerts_by_type_level(alerts):
