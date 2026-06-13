@@ -65,7 +65,6 @@ COUNTY_TO_CITY = {
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
-# ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -99,7 +98,6 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-# ======================== 功能1：全省当天天气预报 ========================
 def get_city_today_weather(city_name, url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
@@ -198,38 +196,48 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：气象预警（使用正则提取区县，已验证100+次） ========================
-def extract_county_from_title(title):
+# ======================== 优化后的预警区县提取函数 ========================
+def extract_city_from_title(title):
     """
-    从预警标题中提取区县名（县级市或县），支持格式：
+    从预警标题中提取城市名（地级市或区县），支持多种格式：
     - 山西省大同市浑源县 -> 浑源
     - 山西省忻州市繁峙县 -> 繁峙
     - 山西省忻州市原平市 -> 原平
     - 山西省晋中市介休市 -> 介休
+    - 山西省大同市发布... -> 大同（直接提取地级市）
     - 山西省吕梁市岚县 -> 岚
+    - 山西省吕梁市交口县 -> 交口
     """
-    # 1. 优先匹配“市X县”模式（X为区县名）
+    # 1. 优先匹配“市X县”（区县名在“市”和“县”之间）
     match = re.search(r'市(.+?)县', title)
     if match:
-        county = match.group(1)
-        # 去除可能残留的“市”或“区”
-        county = county.rstrip('市')
-        return county
-    # 2. 匹配“市X市”模式（县级市）
+        return match.group(1).rstrip('市')
+    # 2. 匹配“市X市”（县级市）
     match = re.search(r'市(.+?)市', title)
     if match:
-        county = match.group(1)
-        return county
-    # 3. 匹配“市X区”模式（区）
+        return match.group(1)
+    # 3. 匹配“市X区”
     match = re.search(r'市(.+?)区', title)
     if match:
-        county = match.group(1)
-        return county
-    # 4. 如果都没有，尝试直接找“县”或“市”前2-4个字符（备用）
-    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
-    if match:
         return match.group(1)
+    # 4. 匹配“省X市”（直接提取地级市，如“山西省大同市发布”中的“大同”）
+    match = re.search(r'省(.+?)市', title)
+    if match:
+        city = match.group(1)
+        # 排除“山西”这种情况（如果匹配到“山西”，则无效）
+        if city == '山西':
+            pass
+        else:
+            return city
+    # 5. 备用：直接找“市”前的2-4个中文字符（不要包含“省”）
     match = re.search(r'([\u4e00-\u9fa5]{2,4})市', title)
+    if match:
+        candidate = match.group(1)
+        # 过滤掉“山西”、“全省”等无效词
+        if candidate not in ['山西', '全省', '中国']:
+            return candidate
+    # 6. 直接找“县”前的2-4个中文字符
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
     if match:
         return match.group(1)
     return None
@@ -239,7 +247,6 @@ def county_to_city(county):
         return None
     if county in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[county]
-    # 尝试去除可能的后缀
     base = county.rstrip('县市区')
     if base in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[base]
@@ -268,15 +275,21 @@ def fetch_alerts():
             level = level_match.group(1)
             type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
             alert_type = type_match.group(1) if type_match else "未知"
-            county = extract_county_from_title(title)
-            if not county:
-                print(f"无法从标题中提取区县名称：{title}")
+            city_name = extract_city_from_title(title)
+            if not city_name:
+                print(f"无法从标题中提取城市名称：{title}")
                 continue
-            city = county_to_city(county)
-            if not city:
-                print(f"无法映射区县 {county} 到地级市，预警标题：{title}")
-                continue
-            if city not in ALERT_TARGET_CITIES:
+            # 直接尝试映射（如果本身就是地级市，可能在映射表中）
+            target_city = None
+            if city_name in COUNTY_TO_CITY:
+                target_city = COUNTY_TO_CITY[city_name]
+            elif city_name in ALERT_TARGET_CITIES:
+                target_city = city_name
+            else:
+                # 尝试作为区县映射
+                target_city = county_to_city(city_name)
+            if not target_city or target_city not in ALERT_TARGET_CITIES:
+                print(f"无法映射城市 {city_name} 到目标地级市，预警标题：{title}")
                 continue
             effective = alert.get("effective", "")
             pub_time = effective
@@ -289,7 +302,7 @@ def fetch_alerts():
             result.append({
                 "type": alert_type,
                 "level": level,
-                "city": city,
+                "city": target_city,
                 "pub_time": pub_time
             })
         return result
@@ -390,7 +403,6 @@ def run_alert_check():
     save_alert_cache(list(sent))
     print(f"已推送 {len(new_alerts)} 条预警")
 
-# ======================== 主入口 ========================
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
