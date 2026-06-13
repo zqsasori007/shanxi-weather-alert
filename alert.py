@@ -156,7 +156,7 @@ def build_today_forecast_message(weather_data):
         last_line = lines[-1].rstrip("；") + "。"
         lines[-1] = last_line
     lines.append("")
-    lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查、防暑降温等工作；提醒员工及合作单位做好人员及财产安全防护。")
+    lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查等应急工作；提醒员工及合作单位做好人员及财产安全防护。")
     lines.append("📢 数据来源：中央气象台")
     return "\n".join(lines)
 
