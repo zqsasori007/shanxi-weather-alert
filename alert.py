@@ -415,7 +415,7 @@ def run_alert_check():
 if __name__ == "__main__":
     now_bj = get_beijing_now()
     logger.info(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
-    if not is_beijing_time_between(0, 23):
+    if not is_beijing_time_between(8, 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
     # 允许 8:00-9:00 之间推送预报，避免因调度延迟错过8点整
