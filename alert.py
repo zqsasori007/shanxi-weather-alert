@@ -196,48 +196,27 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 优化后的预警区县提取函数 ========================
+# ======================== 预警处理（修正区县提取） ========================
 def extract_city_from_title(title):
     """
-    从预警标题中提取城市名（地级市或区县），支持多种格式：
-    - 山西省大同市浑源县 -> 浑源
-    - 山西省忻州市繁峙县 -> 繁峙
-    - 山西省忻州市原平市 -> 原平
-    - 山西省晋中市介休市 -> 介休
-    - 山西省大同市发布... -> 大同（直接提取地级市）
-    - 山西省吕梁市岚县 -> 岚
-    - 山西省吕梁市交口县 -> 交口
+    从预警标题中提取城市名（区县或地级市）。
+    策略：优先提取“县”前的2-4个中文字符（区县名），
+    其次提取“市”前的2-4个中文字符（地级市），
+    最后提取“区”前的。
     """
-    # 1. 优先匹配“市X县”（区县名在“市”和“县”之间）
-    match = re.search(r'市(.+?)县', title)
-    if match:
-        return match.group(1).rstrip('市')
-    # 2. 匹配“市X市”（县级市）
-    match = re.search(r'市(.+?)市', title)
+    # 1. 匹配“县”前的2-4个中文字符（常见区县）
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
     if match:
         return match.group(1)
-    # 3. 匹配“市X区”
-    match = re.search(r'市(.+?)区', title)
-    if match:
-        return match.group(1)
-    # 4. 匹配“省X市”（直接提取地级市，如“山西省大同市发布”中的“大同”）
-    match = re.search(r'省(.+?)市', title)
-    if match:
-        city = match.group(1)
-        # 排除“山西”这种情况（如果匹配到“山西”，则无效）
-        if city == '山西':
-            pass
-        else:
-            return city
-    # 5. 备用：直接找“市”前的2-4个中文字符（不要包含“省”）
+    # 2. 匹配“市”前的2-4个中文字符（地级市，如“大同”）
     match = re.search(r'([\u4e00-\u9fa5]{2,4})市', title)
     if match:
         candidate = match.group(1)
-        # 过滤掉“山西”、“全省”等无效词
+        # 过滤掉“山西”、“全省”等
         if candidate not in ['山西', '全省', '中国']:
             return candidate
-    # 6. 直接找“县”前的2-4个中文字符
-    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
+    # 3. 匹配“区”前的2-4个中文字符
+    match = re.search(r'([\u4e00-\u9fa5]{2,4})区', title)
     if match:
         return match.group(1)
     return None
@@ -279,14 +258,13 @@ def fetch_alerts():
             if not city_name:
                 print(f"无法从标题中提取城市名称：{title}")
                 continue
-            # 直接尝试映射（如果本身就是地级市，可能在映射表中）
+            # 尝试直接映射或作为区县映射
             target_city = None
             if city_name in COUNTY_TO_CITY:
                 target_city = COUNTY_TO_CITY[city_name]
             elif city_name in ALERT_TARGET_CITIES:
                 target_city = city_name
             else:
-                # 尝试作为区县映射
                 target_city = county_to_city(city_name)
             if not target_city or target_city not in ALERT_TARGET_CITIES:
                 print(f"无法映射城市 {city_name} 到目标地级市，预警标题：{title}")
