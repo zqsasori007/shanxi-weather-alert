@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-【临时测试版】忽略今日已发送检查，强制执行预报推送
+每天8:00推送全省主要城市【当天】天气预报（天气+气温+风力）
+每小时检查气象预警并推送
 """
 
 import requests
@@ -59,6 +60,7 @@ COUNTY_TO_CITY = {
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
+# ======================== 辅助函数 ========================
 def is_beijing_time_between(start_hour, end_hour):
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -68,6 +70,11 @@ def get_current_beijing_date():
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
     return now_bj.strftime("%Y-%m-%d")
+
+def get_weekday():
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    now_bj = datetime.utcnow() + timedelta(hours=8)
+    return weekdays[now_bj.weekday()]
 
 def send_to_wecom(content):
     if not WEBHOOK_URL:
@@ -87,88 +94,89 @@ def send_to_wecom(content):
         print(f"消息发送异常：{e}")
         return False
 
-def get_city_weather(city_name, url):
+# ======================== 功能1：当天天气预报 ========================
+def get_city_today_weather(city_name, url):
+    """抓取单个城市当天的天气（天气现象、气温、风力）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        day_divs = tree.xpath('//*[@id="day7"]/div[position()<=3]')
-        result = []
-        for div in day_divs:
-            date_ele = div.xpath('.//h3/text()')
-            date_str = date_ele[0].strip() if date_ele else ""
-            weather_ele = div.xpath('.//p[@class="wea"]/text()')
-            weather = weather_ele[0].strip() if weather_ele else ""
-            temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
-            if len(temp_ele) >= 2:
-                temp_text = f"{temp_ele[0].strip()}/{temp_ele[1].strip()}℃"
-            elif len(temp_ele) == 1:
-                temp_text = f"{temp_ele[0].strip()}℃"
-            else:
-                full_text = "".join(div.itertext())
-                temps = re.findall(r'(\d+)℃', full_text)
-                if temps:
-                    temp_text = f"{temps[0]}℃" if len(temps)==1 else f"{temps[0]}/{temps[1]}℃"
+        today_div = tree.xpath('//*[@id="day7"]/div[1]')
+        if not today_div:
+            return None
+        div = today_div[0]
+        weather_ele = div.xpath('.//p[@class="wea"]/text()')
+        weather = weather_ele[0].strip() if weather_ele else ""
+        temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
+        if len(temp_ele) >= 2:
+            temp_high = temp_ele[0].strip()
+            temp_low = temp_ele[1].strip()
+            temp_str = f"{temp_low}~{temp_high}℃"
+        elif len(temp_ele) == 1:
+            temp_str = f"{temp_ele[0].strip()}℃"
+        else:
+            full_text = "".join(div.itertext())
+            temps = re.findall(r'(\d+)℃', full_text)
+            if temps:
+                if len(temps) >= 2:
+                    temp_str = f"{temps[1]}~{temps[0]}℃"
                 else:
-                    temp_text = "?"
-            if date_str:
-                line = f"{date_str} {weather} {temp_text}"
+                    temp_str = f"{temps[0]}℃"
             else:
-                line = f"{weather} {temp_text}"
-            result.append(line)
-        return result
+                temp_str = "?"
+        wind_ele = div.xpath('.//p[@class="win"]/text()')
+        wind = wind_ele[0].strip() if wind_ele else ""
+        return f"{weather}，气温{temp_str}，{wind}"
     except Exception as e:
         print(f"获取 {city_name} 天气失败：{e}")
         return None
 
-def get_province_weather():
+def get_province_today_weather():
     result = {}
     any_success = False
     for city, url in CITY_FORECAST_URLS.items():
-        weathers = get_city_weather(city, url)
-        if weathers is None:
+        detail = get_city_today_weather(city, url)
+        if detail is None:
             continue
         any_success = True
-        if weathers:
-            result[city] = weathers
-        else:
-            print(f"{city} 未获取到有效天气")
+        result[city] = detail
     return result, any_success
 
-def build_forecast_message(weather_data):
+def build_today_forecast_message(weather_data):
     if not weather_data:
         return None
     today = get_current_beijing_date()
-    lines = [f"【山西未来三天天气预报】{today} 发布", ""]
-    for city, days in weather_data.items():
-        forecast_str = " | ".join(days)
-        lines.append(f"📍 {city}：{forecast_str}")
+    weekday = get_weekday()
+    lines = [f"【山西省天气预报】{today}（{weekday}） 发布", ""]
+    for city, detail in weather_data.items():
+        lines.append(f"📍 {city}：{detail}；")
+    # 最后一行以句号结尾
+    if len(lines) > 2:
+        last_line = lines[-1].rstrip("；") + "。"
+        lines[-1] = last_line
     lines.append("")
-    lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查、防暑降温等工作。")
+    lines.append("⚠️ 温馨提示：请各单位关注实时气象预警，做好车辆防护、排水检查、防暑降温等工作；提醒员工及合作单位做好人员及财产安全防护。")
     lines.append("📢 数据来源：中央气象台")
     return "\n".join(lines)
 
 def has_forecast_sent_today():
-    # 临时测试版：始终返回 False，忽略缓存
-    return False
-    # if not os.path.exists(FORECAST_CACHE_FILE):
-    #     return False
-    # with open(FORECAST_CACHE_FILE, "r", encoding="utf-8") as f:
-    #     saved_date = f.read().strip()
-    # return saved_date == get_current_beijing_date()
+    if not os.path.exists(FORECAST_CACHE_FILE):
+        return False
+    with open(FORECAST_CACHE_FILE, "r", encoding="utf-8") as f:
+        saved_date = f.read().strip()
+    return saved_date == get_current_beijing_date()
 
 def mark_forecast_sent():
     with open(FORECAST_CACHE_FILE, "w", encoding="utf-8") as f:
         f.write(get_current_beijing_date())
 
 def run_daily_forecast():
-    # 临时测试版：忽略 has_forecast_sent_today 检查
-    # if has_forecast_sent_today():
-    #     print("今日天气预报已发送过，跳过")
-    #     return
-    print("开始获取全省未来三天天气预报...")
-    weather, any_success = get_province_weather()
+    if has_forecast_sent_today():
+        print("今日天气预报已发送过，跳过")
+        return
+    print("开始获取全省当天天气预报...")
+    weather, any_success = get_province_today_weather()
     if not any_success:
         print("所有城市天气获取失败，本次不推送，不标记已发送")
         return
@@ -176,13 +184,14 @@ def run_daily_forecast():
         print("未获取到任何城市的天气数据，标记已发送避免重复尝试")
         mark_forecast_sent()
         return
-    msg = build_forecast_message(weather)
+    msg = build_today_forecast_message(weather)
     if msg:
         send_to_wecom(msg)
         mark_forecast_sent()
     else:
         print("消息为空，不推送")
 
+# ======================== 功能2：实时气象预警 ========================
 def fetch_alerts():
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -268,10 +277,6 @@ def get_prevention_tips(alert_type, level):
         return base + "立即将露天车辆转移至室内或覆盖防雹车衣；人员进入室内躲避。"
     if "雪" in alert_type:
         return base + ("检查屋顶承重，及时清理积雪，注意行车安全。" if "暴雪" in alert_type or "大雪" in alert_type else "注意路面湿滑，减少户外活动。")
-    if "高温" in alert_type:
-        return base + "展厅空调提前开启，准备防暑药品，检查车辆电瓶和轮胎。"
-    if "雷电" in alert_type:
-        return base + "暂停户外试驾，关闭不必要电器，人员进入室内远离金属门窗。"
     return base + "关注天气变化，做好防范。"
 
 def build_alert_message(alert):
@@ -282,7 +287,7 @@ def build_alert_message(alert):
 
 {get_prevention_tips(alert['type'], alert['level'])}
 
-请各子公司、分公司立即响应，做好防范。"""
+请各单位立即响应，做好防范。"""
     return msg
 
 def run_alert_check():
@@ -311,6 +316,7 @@ def run_alert_check():
     save_alert_cache(list(sent))
     print(f"已推送 {len(new_alerts)} 条预警")
 
+# ======================== 主入口 ========================
 if __name__ == "__main__":
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
@@ -318,9 +324,11 @@ if __name__ == "__main__":
     if not is_beijing_time_between(8, 21):
         print("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    # 临时测试：强制执行预报（无论几点）
-    print("===== 临时测试：强制执行每日天气预报推送 =====")
-    run_daily_forecast()
-    # 预警检查照常
-    print("===== 执行预警检查 =====")
-    run_alert_check()
+    if now_bj.hour == 8:
+        print("===== 执行每日天气预报推送 =====")
+        run_daily_forecast()
+        print("===== 执行预警检查 =====")
+        run_alert_check()
+    else:
+        print("===== 执行预警检查 =====")
+        run_alert_check()
