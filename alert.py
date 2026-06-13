@@ -208,34 +208,55 @@ def run_daily_forecast():
     else:
         print("消息为空，不推送")
 
-# ======================== 功能2：气象预警（修复区县提取） ========================
+# ======================== 功能2：气象预警（稳健的区县提取） ========================
 def extract_county_from_title(title):
     """
-    从预警标题中提取区县名称（纯区县名，去除县市区后缀）
-    经过100+次测试，可正确提取类似'浑源'、'繁峙'、'原平'、'介休'等。
+    从预警标题中提取区县名（如浑源、繁峙、原平、介休等）
+    策略：找到“县/市/区”的位置，然后向前取连续的中文字符（不超过4个）
     """
-    # 优先匹配“XXX县”
-    match = re.search(r'([\u4e00-\u9fa5]{2,4})县', title)
-    if match:
-        return match.group(1)
-    # 匹配“XXX市”（县级市或地级市）
-    match = re.search(r'([\u4e00-\u9fa5]{2,4})市', title)
-    if match:
-        return match.group(1)
-    # 匹配“XXX区”
-    match = re.search(r'([\u4e00-\u9fa5]{2,4})区', title)
-    if match:
-        return match.group(1)
+    # 优先处理“县”
+    idx = title.find('县')
+    if idx != -1:
+        start = idx
+        for i in range(idx-1, max(idx-5, -1), -1):
+            if '\u4e00' <= title[i] <= '\u9fff':
+                start = i
+            else:
+                break
+        if start < idx:
+            return title[start:idx]
+    # 处理“市”（县级市或地级市）
+    idx = title.find('市')
+    if idx != -1:
+        start = idx
+        for i in range(idx-1, max(idx-5, -1), -1):
+            if '\u4e00' <= title[i] <= '\u9fff':
+                start = i
+            else:
+                break
+        if start < idx:
+            return title[start:idx]
+    # 处理“区”
+    idx = title.find('区')
+    if idx != -1:
+        start = idx
+        for i in range(idx-1, max(idx-5, -1), -1):
+            if '\u4e00' <= title[i] <= '\u9fff':
+                start = i
+            else:
+                break
+        if start < idx:
+            return title[start:idx]
     return None
 
 def county_to_city(county):
-    """将区县名称转换为地级市，支持去除后缀匹配"""
+    """将区县名映射到地级市，自动去除可能的后缀"""
     if not county:
         return None
     # 直接匹配
     if county in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[county]
-    # 尝试去掉后缀（如果提取时没去掉）
+    # 去除末尾可能的“县”“市”“区”
     base = county.rstrip('县市区')
     if base in COUNTY_TO_CITY:
         return COUNTY_TO_CITY[base]
@@ -255,7 +276,7 @@ def fetch_alerts():
             title = alert.get("title", "") or alert.get("headline", "")
             if not title:
                 continue
-            # 忽略不需要的预警类型
+            # 忽略高温和雷电
             if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
                 print(f"忽略预警：{title}")
                 continue
