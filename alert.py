@@ -91,7 +91,7 @@ ALERT_CACHE_FILE = "alert_cache.json"
 def is_beijing_time_between(start_hour, end_hour):
     """判断当前北京时间是否在 start_hour 到 end_hour 之间（包含 start, 不包含 end）"""
     now_utc = datetime.utcnow()
-    now_bj = now_utc + timedelta(hours=8)   # 关键：加8小时得到北京时间
+    now_bj = now_utc + timedelta(hours=8)
     return start_hour <= now_bj.hour < end_hour
 
 def get_current_beijing_date():
@@ -129,11 +129,15 @@ def get_city_forecast(city_name, url):
         for div in day_divs:
             text = "".join(div.itertext())
             full_text += text + " "
+        
+        # 调试输出：打印每个城市抓取到的文本片段（前500字符）
+        print(f"[DEBUG] {city_name} 抓取文本预览: {full_text[:500]}...")
+        
         found = [kw for kw in FORECAST_KEYWORDS if kw in full_text]
         return list(set(found))
     except Exception as e:
         print(f"获取 {city_name} 预报失败：{e}")
-        return None  # 返回 None 表示抓取失败
+        return None
 
 def get_province_forecast():
     result = {}
@@ -145,6 +149,9 @@ def get_province_forecast():
         any_success = True
         if keywords:
             result[city] = keywords
+            print(f"[DEBUG] {city} 匹配到关键词: {keywords}")
+        else:
+            print(f"[DEBUG] {city} 未匹配到任何关键词")
     return result, any_success
 
 def build_forecast_message(forecast_data):
@@ -237,7 +244,7 @@ def convert_locations_to_cities(locations):
 def group_alerts_by_type_level(alerts):
     groups = {}
     for alert in alerts:
-        key = (alert["type"], alert["level"])  # 保留等级用于生成提示，但不用于去重签名
+        key = (alert["type"], alert["level"])
         if key not in groups:
             groups[key] = {
                 "type": alert["type"],
@@ -260,7 +267,6 @@ def group_alerts_by_type_level(alerts):
     return result
 
 def get_alert_signature(alert):
-    """生成去重签名：只包含预警类型和城市列表，忽略等级和范围扩大"""
     cities_str = ",".join(sorted(alert["cities"]))
     return f"{alert['type']}_{cities_str}"
 
@@ -355,7 +361,6 @@ def run_alert_check():
 
 # ======================== 主入口 ========================
 if __name__ == "__main__":
-    # 先获取北京时间
     now_utc = datetime.utcnow()
     now_bj = now_utc + timedelta(hours=8)
     current_hour = now_bj.hour
@@ -366,7 +371,7 @@ if __name__ == "__main__":
         print("当前不在8:00-21:00之间，脚本退出")
         exit(0)
     
-    if True:
+    if current_hour == 8:
         print("===== 执行每日预报推送 =====")
         run_daily_forecast()
         print("===== 执行预警检查 =====")
