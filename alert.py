@@ -59,10 +59,14 @@ def get_beijing_now():
     """使用标准时区获取北京时间"""
     try:
         tz = ZoneInfo("Asia/Shanghai")
-        return datetime.now(tz)
-    except:
-        # 回退到手动加8小时
-        return datetime.utcnow() + timedelta(hours=8)
+        now = datetime.now(tz)
+        logger.debug(f"使用 zoneinfo 获取时间: {now}")
+        return now
+    except Exception as e:
+        logger.warning(f"zoneinfo 失败，回退到手动加8小时: {e}")
+        now = datetime.utcnow() + timedelta(hours=8)
+        logger.debug(f"使用回退获取时间: {now}")
+        return now
 
 def is_beijing_time_between(start_hour, end_hour):
     now_bj = get_beijing_now()
@@ -93,7 +97,6 @@ def send_to_wecom(content):
     # 长度校验（企业微信限制2048字节，中文字符按3字节估算）
     if len(content.encode('utf-8')) > 2048:
         logger.warning("消息超长，将截断")
-        # 简单截断至安全长度
         content = content[:2000]  # 保留足够结尾
     headers = {"Content-Type": "application/json"}
     payload = {"msgtype": "text", "text": {"content": content}}
@@ -110,7 +113,6 @@ def send_to_wecom(content):
                 else:
                     errmsg = result.get("errmsg", "未知错误")
                     logger.error(f"企业微信返回错误码 {errcode}: {errmsg}")
-                    # 若是因为消息格式问题（如长度超限），不再重试
                     if errcode in (93017, 93018):
                         return False
             else:
@@ -118,12 +120,11 @@ def send_to_wecom(content):
         except Exception as e:
             logger.error(f"发送异常: {e}")
         if attempt < max_retries:
-            time.sleep(2 ** attempt)  # 指数退避
+            time.sleep(2 ** attempt)
     return False
 
 # ======================== 功能1：全省当天天气预报 ========================
 def get_city_today_weather(city_name, url):
-    """抓取单个城市当天的天气（天气现象、气温、风力）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
@@ -135,6 +136,7 @@ def get_city_today_weather(city_name, url):
             # 备选：尝试 id="day7" 兼容旧版
             today_div = tree.xpath('//*[@id="day7"]/div[1]')
         if not today_div:
+            logger.warning(f"{city_name}: 未找到当日天气div")
             return None
         div = today_div[0]
         weather_ele = div.xpath('.//p[@class="wea"]/text()')
@@ -147,12 +149,9 @@ def get_city_today_weather(city_name, url):
         elif len(temp_ele) == 1:
             temp_str = f"{temp_ele[0].strip()}℃"
         else:
-            # 优化：只提取温度数字，避免匹配无关数字
             full_text = "".join(div.itertext())
-            # 匹配类似 "14℃" 或 "29/14℃" 模式
             temps = re.findall(r'(\d+)℃', full_text)
             if temps:
-                # 取前两个作为低温和高温
                 if len(temps) >= 2:
                     temp_str = f"{temps[1]}~{temps[0]}℃"
                 else:
@@ -230,27 +229,21 @@ def run_daily_forecast():
     else:
         logger.warning("消息为空，不推送")
 
-# ======================== 功能2：气象预警（增强城市提取） ========================
+# ======================== 功能2：气象预警 ========================
 def extract_city_from_title(title):
-    """
-    从标题中提取地级市名称，支持多种格式：
-    - 山西省大同市... -> 大同
-    - 大同市... -> 大同
-    - 山西大同市... -> 大同
-    """
     # 模式1：省XX市
     match = re.search(r'省(.+?)市', title)
     if match:
         city = match.group(1)
         if re.match(r'^[\u4e00-\u9fa5]{2,4}$', city):
             return city
-    # 模式2：直接匹配“XX市”且前面不是“省”或“中国”
+    # 模式2：直接匹配“XX市”
     match = re.search(r'(?<!省)(?<!中国)([\u4e00-\u9fa5]{2,4})市', title)
     if match:
         city = match.group(1)
         if city not in ['山西', '全省']:
             return city
-    # 模式3：从“发布”前查找地级市（备用）
+    # 模式3：从“发布”前查找
     match = re.search(r'([\u4e00-\u9fa5]{2,4})市[^省]', title)
     if match:
         city = match.group(1)
@@ -259,7 +252,6 @@ def extract_city_from_title(title):
     return None
 
 def fetch_alerts_with_retry():
-    """带重试的预警获取"""
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
@@ -283,27 +275,22 @@ def fetch_alerts():
         title = alert.get("title", "") or alert.get("headline", "")
         if not title:
             continue
-        # 忽略不需要的类型
         if any(ignore in title for ignore in IGNORE_ALERT_TYPES):
             logger.info(f"忽略预警：{title}")
             continue
-        # 提取等级
         level_match = re.search(r'(蓝色|黄色|橙色|红色)预警', title)
         if not level_match:
             continue
         level = level_match.group(1)
-        # 提取类型并修正错别字
         type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
         alert_type = type_match.group(1) if type_match else "未知"
         alert_type = alert_type.replace('冰霍', '冰雹')
-        # 提取城市
         city = extract_city_from_title(title)
         if not city:
             logger.debug(f"无法提取城市：{title}")
             continue
         if city not in ALERT_TARGET_CITIES:
             continue
-        # 发布时间
         effective = alert.get("effective", "")
         pub_time = effective
         if pub_time:
@@ -418,7 +405,7 @@ if __name__ == "__main__":
     if not is_beijing_time_between(8, 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    # 允许 8:00-9:00 之间推送预报，避免因调度延迟错过8点整
+    # 允许 8:00-9:00 之间推送预报
     if 8 <= now_bj.hour < 9:
         logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
