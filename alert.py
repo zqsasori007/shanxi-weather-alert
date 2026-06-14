@@ -2,14 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-最终稳定版（已修复所有已知问题）
-- 企业微信业务错误码校验，避免误判成功
-- 天气预报XPath修正为 class="day7"
-- 温度提取优化，避免匹配无关数字
-- 预警城市提取支持无“省”前缀的标题
-- 消息长度校验与特殊字符清洗
-- 网络请求重试机制
-- 标准时区处理
+【临时测试版】强制推送天气预报，忽略时间窗口和已发送标记
 """
 
 import requests
@@ -21,9 +14,9 @@ import logging
 from datetime import datetime, timedelta
 from lxml import etree
 try:
-    from zoneinfo import ZoneInfo  # Python 3.9+
+    from zoneinfo import ZoneInfo
 except ImportError:
-    from pytz import timezone as ZoneInfo  # 需要 pip install pytz
+    from pytz import timezone as ZoneInfo
 
 # ======================== 配置区域 ========================
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
@@ -50,54 +43,31 @@ CITY_FORECAST_URLS = {
 FORECAST_CACHE_FILE = "forecast_sent_date.txt"
 ALERT_CACHE_FILE = "alert_cache.json"
 
-# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # ======================== 辅助函数 ========================
 def get_beijing_now():
-    """使用标准时区获取北京时间"""
     try:
         tz = ZoneInfo("Asia/Shanghai")
-        now = datetime.now(tz)
-        logger.debug(f"使用 zoneinfo 获取时间: {now}")
-        return now
-    except Exception as e:
-        logger.warning(f"zoneinfo 失败，回退到手动加8小时: {e}")
-        now = datetime.utcnow() + timedelta(hours=8)
-        logger.debug(f"使用回退获取时间: {now}")
-        return now
-
-def is_beijing_time_between(start_hour, end_hour):
-    now_bj = get_beijing_now()
-    return start_hour <= now_bj.hour < end_hour
-
-def get_current_beijing_date():
-    return get_beijing_now().strftime("%Y-%m-%d")
-
-def get_weekday():
-    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    return weekdays[get_beijing_now().weekday()]
+        return datetime.now(tz)
+    except:
+        return datetime.utcnow() + timedelta(hours=8)
 
 def clean_text(text):
-    """清洗文本中的控制字符，防止企业微信JSON解析错误"""
     if not text:
         return ""
-    # 移除 ASCII 控制字符 (0x00-0x1F) 除了 \t, \n, \r
     cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
     return cleaned.strip()
 
 def send_to_wecom(content):
-    """发送消息到企业微信，校验业务错误码，支持重试"""
     if not WEBHOOK_URL:
         logger.error("未设置 WEBHOOK_URL")
         return False
-    # 清洗特殊字符
     content = clean_text(content)
-    # 长度校验（企业微信限制2048字节，中文字符按3字节估算）
     if len(content.encode('utf-8')) > 2048:
         logger.warning("消息超长，将截断")
-        content = content[:2000]  # 保留足够结尾
+        content = content[:2000]
     headers = {"Content-Type": "application/json"}
     payload = {"msgtype": "text", "text": {"content": content}}
     max_retries = 2
@@ -123,24 +93,38 @@ def send_to_wecom(content):
             time.sleep(2 ** attempt)
     return False
 
-# ======================== 功能1：全省当天天气预报 ========================
+# ======================== 天气预报抓取（增强版） ========================
 def get_city_today_weather(city_name, url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        # 修正：使用 class="day7"
+        
+        # 定位今天天气
         today_div = tree.xpath('//div[@class="day7"]/div[1]')
         if not today_div:
-            # 备选：尝试 id="day7" 兼容旧版
             today_div = tree.xpath('//*[@id="day7"]/div[1]')
         if not today_div:
-            logger.warning(f"{city_name}: 未找到当日天气div")
+            today_div = tree.xpath('//div[contains(@class, "day")]/div[1]')
+        if not today_div:
+            logger.warning(f"{city_name}: 未找到天气区块")
             return None
+        
         div = today_div[0]
+        
+        # 天气现象
         weather_ele = div.xpath('.//p[@class="wea"]/text()')
-        weather = weather_ele[0].strip() if weather_ele else ""
+        if not weather_ele:
+            weather_ele = div.xpath('.//p[contains(@class, "wea")]/text()')
+        if weather_ele:
+            weather = weather_ele[0].strip()
+        else:
+            text = "".join(div.itertext())
+            match = re.search(r'(晴|多云|阴|小雨|中雨|大雨|暴雨|雷阵雨|冰雹|雪|雾)', text)
+            weather = match.group(1) if match else ""
+        
+        # 温度
         temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
         if len(temp_ele) >= 2:
             temp_high = temp_ele[0].strip()
@@ -158,11 +142,28 @@ def get_city_today_weather(city_name, url):
                     temp_str = f"{temps[0]}℃"
             else:
                 temp_str = "?"
+        
+        # 风力
         wind_ele = div.xpath('.//p[@class="win"]/text()')
-        wind = wind_ele[0].strip() if wind_ele else ""
-        return f"{weather}，气温{temp_str}，{wind}"
+        if not wind_ele:
+            wind_ele = div.xpath('.//p[contains(@class, "win")]/text()')
+        if wind_ele:
+            wind = wind_ele[0].strip()
+        else:
+            text = "".join(div.itertext())
+            match = re.search(r'([北南西东][风转].*?级|微风|无持续风向)', text)
+            wind = match.group(1) if match else ""
+        
+        if weather and temp_str and wind:
+            return f"{weather}，气温{temp_str}，{wind}"
+        elif weather and temp_str:
+            return f"{weather}，气温{temp_str}"
+        else:
+            # 保底
+            raw = "".join(div.itertext()).strip()[:100]
+            return raw
     except Exception as e:
-        logger.error(f"获取 {city_name} 天气失败: {e}")
+        logger.error(f"{city_name} 抓取失败: {e}")
         return None
 
 def get_all_cities_weather():
@@ -177,13 +178,14 @@ def get_all_cities_weather():
             continue
         any_success = True
         result[city] = detail
+        logger.info(f"{city}: {detail}")
     return result, any_success
 
 def build_today_forecast_message(weather_data):
     if not weather_data:
         return None
-    today = get_current_beijing_date()
-    weekday = get_weekday()
+    today = get_beijing_now().strftime("%Y-%m-%d")
+    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][get_beijing_now().weekday()]
     lines = [f"【山西省天气预报】{today}（{weekday}） 发布", ""]
     for city in ALL_CITIES:
         if city in weather_data:
@@ -196,54 +198,34 @@ def build_today_forecast_message(weather_data):
     lines.append("📢 数据来源：中央气象台")
     return "\n".join(lines)
 
-def has_forecast_sent_today():
-    if not os.path.exists(FORECAST_CACHE_FILE):
-        return False
-    with open(FORECAST_CACHE_FILE, "r", encoding="utf-8") as f:
-        saved_date = f.read().strip()
-    return saved_date == get_current_beijing_date()
-
-def mark_forecast_sent():
-    with open(FORECAST_CACHE_FILE, "w", encoding="utf-8") as f:
-        f.write(get_current_beijing_date())
-
-def run_daily_forecast():
-    if has_forecast_sent_today():
-        logger.info("今日天气预报已发送过，跳过")
-        return
-    logger.info("开始获取全省当天天气预报...")
+def run_daily_forecast_force():
+    """强制推送预报（忽略今日已发送）"""
+    logger.info("【测试模式】强制获取全省当天天气预报...")
     weather, any_success = get_all_cities_weather()
     if not any_success:
-        logger.warning("所有城市天气获取失败，本次不推送，不标记已发送")
+        logger.warning("所有城市天气获取失败，本次不推送")
         return
     if not weather:
-        logger.warning("未获取到任何城市的天气数据，标记已发送避免重复尝试")
-        mark_forecast_sent()
+        logger.warning("未获取到任何城市的天气数据")
         return
     msg = build_today_forecast_message(weather)
     if msg:
-        if send_to_wecom(msg):
-            mark_forecast_sent()
-        else:
-            logger.error("天气预报推送失败，未标记已发送")
+        send_to_wecom(msg)
     else:
         logger.warning("消息为空，不推送")
 
-# ======================== 功能2：气象预警 ========================
+# ======================== 预警部分（保持原样） ========================
 def extract_city_from_title(title):
-    # 模式1：省XX市
     match = re.search(r'省(.+?)市', title)
     if match:
         city = match.group(1)
         if re.match(r'^[\u4e00-\u9fa5]{2,4}$', city):
             return city
-    # 模式2：直接匹配“XX市”
     match = re.search(r'(?<!省)(?<!中国)([\u4e00-\u9fa5]{2,4})市', title)
     if match:
         city = match.group(1)
         if city not in ['山西', '全省']:
             return city
-    # 模式3：从“发布”前查找
     match = re.search(r'([\u4e00-\u9fa5]{2,4})市[^省]', title)
     if match:
         city = match.group(1)
@@ -335,7 +317,7 @@ def load_alert_cache():
     try:
         with open(ALERT_CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if data.get("date") != get_current_beijing_date():
+        if data.get("date") != get_beijing_now().strftime("%Y-%m-%d"):
             return {"date": "", "signatures": []}
         return data
     except:
@@ -343,7 +325,7 @@ def load_alert_cache():
 
 def save_alert_cache(signatures):
     with open(ALERT_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"date": get_current_beijing_date(), "signatures": signatures}, f, ensure_ascii=False, indent=2)
+        json.dump({"date": get_beijing_now().strftime("%Y-%m-%d"), "signatures": signatures}, f, ensure_ascii=False, indent=2)
 
 def get_prevention_tips(alert_type, level):
     base = "📌 山西东风南方温馨提示："
@@ -398,19 +380,13 @@ def run_alert_check():
             logger.error(f"预警推送失败：{alert['type']}{alert['level']} {alert['cities']}")
     save_alert_cache(list(sent))
 
-# ======================== 主入口 ========================
+# ======================== 主入口（测试模式） ========================
 if __name__ == "__main__":
     now_bj = get_beijing_now()
     logger.info(f"当前北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
-    if not is_beijing_time_between(8, 21):
-        logger.info("当前不在8:00-21:00之间，脚本退出")
-        exit(0)
-    # 允许 8:00-9:00 之间推送预报
-    if True:   # 临时强制推送预报
-        logger.info("===== 执行每日天气预报推送 =====")
-        run_daily_forecast()
-        logger.info("===== 执行预警检查 =====")
-        run_alert_check()
-    else:
-        logger.info("===== 执行预警检查 =====")
-        run_alert_check()
+    # 临时测试：强制推送预报，忽略时间窗口
+    logger.info("===== 【测试模式】强制执行每日天气预报推送 =====")
+    run_daily_forecast_force()
+    # 预警检查也正常执行
+    logger.info("===== 执行预警检查 =====")
+    run_alert_check()
