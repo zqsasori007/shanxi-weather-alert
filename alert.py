@@ -406,7 +406,7 @@ if __name__ == "__main__":
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
     # 允许 8:00-9:00 之间推送预报
-    if 8 <= now_bj.hour < 9:
+    if True:   # 临时强制推送预报
         logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
         logger.info("===== 执行预警检查 =====")
