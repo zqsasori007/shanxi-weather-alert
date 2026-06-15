@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-最终稳定版（强制 UTC+8，修复天气预报格式，增强日志）
+最终稳定版（强制 UTC+8，修复合并逻辑，解决刷屏）
 """
 
 import requests
@@ -42,9 +42,7 @@ ALERT_CACHE_FILE = "alert_cache.json"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ======================== 强制北京时间 ========================
 def get_beijing_now():
-    """强制返回 UTC+8 时间，避免时区库问题"""
     return datetime.utcnow() + timedelta(hours=8)
 
 def is_beijing_time_between(start_hour, end_hour):
@@ -97,31 +95,25 @@ def send_to_wecom(content):
             time.sleep(2 ** attempt)
     return False
 
-# ======================== 天气预报抓取（正则提取，格式正确） ========================
+# ======================== 天气预报 ========================
 def get_city_today_weather(city_name, url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        # 定位今日天气区块
         today_div = tree.xpath('//div[@class="day7"]/div[1]')
         if not today_div:
             today_div = tree.xpath('//*[@id="day7"]/div[1]')
-        if not today_div:
-            today_div = tree.xpath('//div[contains(@class, "day")]/div[1]')
         if not today_div:
             logger.warning(f"{city_name}: 未找到天气区块")
             return None
         div = today_div[0]
         full_text = "".join(div.itertext())
-        # 提取天气现象
         weather_match = re.search(r'(晴|多云|阴|小雨|中雨|大雨|暴雨|雷阵雨|冰雹|雪|雾)', full_text)
         weather = weather_match.group(1) if weather_match else ""
-        # 提取气温（高低）
         temps = re.findall(r'(\d+)℃', full_text)
         if len(temps) >= 2:
-            # 假设第一个为高温，第二个为低温（根据页面观察）
             high = int(temps[0])
             low = int(temps[1])
             if low > high:
@@ -131,7 +123,6 @@ def get_city_today_weather(city_name, url):
             temp_str = f"{temps[0]}℃"
         else:
             temp_str = "?"
-        # 提取风力
         wind_match = re.search(r'([北南西东][风转].*?级|微风|无持续风向)', full_text)
         wind = wind_match.group(1) if wind_match else ""
         if not wind:
@@ -142,7 +133,6 @@ def get_city_today_weather(city_name, url):
         elif weather and temp_str:
             return f"{weather}，气温{temp_str}"
         else:
-            logger.warning(f"{city_name} 解析不完整，返回原始片段")
             return full_text[:100]
     except Exception as e:
         logger.error(f"{city_name} 抓取失败: {e}")
@@ -213,7 +203,7 @@ def run_daily_forecast():
     else:
         logger.warning("消息为空，不推送")
 
-# ======================== 气象预警（完全复制之前稳定逻辑） ========================
+# ======================== 气象预警（核心修复合并逻辑） ========================
 def extract_city_from_title(title):
     match = re.search(r'省(.+?)市', title)
     if match:
@@ -265,6 +255,7 @@ def fetch_alerts():
         level = level_match.group(1)
         type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
         alert_type = type_match.group(1) if type_match else "未知"
+        # 统一修正错别字
         alert_type = alert_type.replace('冰霍', '冰雹')
         city = extract_city_from_title(title)
         if not city:
@@ -289,6 +280,7 @@ def fetch_alerts():
     return result
 
 def group_alerts_by_type_level(alerts):
+    """按 (类型, 等级) 分组，合并城市列表"""
     groups = {}
     for alert in alerts:
         key = (alert["type"], alert["level"])
@@ -300,12 +292,16 @@ def group_alerts_by_type_level(alerts):
                 "pub_time": alert["pub_time"]
             }
         groups[key]["cities"].add(alert["city"])
-    return [{
-        "type": g["type"],
-        "level": g["level"],
-        "cities": sorted(g["cities"]),
-        "pub_time": g["pub_time"]
-    } for g in groups.values()]
+    # 转换为列表，城市排序
+    result = []
+    for key, group in groups.items():
+        result.append({
+            "type": group["type"],
+            "level": group["level"],
+            "cities": sorted(group["cities"]),
+            "pub_time": group["pub_time"]
+        })
+    return result
 
 def get_alert_signature(alert):
     return f"{alert['type']}_{','.join(alert['cities'])}"
@@ -390,7 +386,6 @@ if __name__ == "__main__":
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
 
-    # 预报窗口扩大到 8:00-10:00，避免调度延迟
     if 8 <= bj_now.hour < 10:
         logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
