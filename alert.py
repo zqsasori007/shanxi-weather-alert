@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-最终稳定版（强制 UTC+8，扩大预报窗口）
+最终稳定版（强制 UTC+8，修复天气预报格式）
 """
 
 import requests
@@ -42,9 +42,7 @@ ALERT_CACHE_FILE = "alert_cache.json"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ======================== 强制北京时间（不再依赖zoneinfo） ========================
 def get_beijing_now():
-    """强制返回 UTC+8 时间，避免时区库问题"""
     return datetime.utcnow() + timedelta(hours=8)
 
 def is_beijing_time_between(start_hour, end_hour):
@@ -97,13 +95,14 @@ def send_to_wecom(content):
             time.sleep(2 ** attempt)
     return False
 
-# ======================== 天气预报抓取 ========================
+# ======================== 天气预报抓取（修复格式） ========================
 def get_city_today_weather(city_name, url):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
+        # 定位今日区块
         today_div = tree.xpath('//div[@class="day7"]/div[1]')
         if not today_div:
             today_div = tree.xpath('//*[@id="day7"]/div[1]')
@@ -113,37 +112,37 @@ def get_city_today_weather(city_name, url):
             logger.warning(f"{city_name}: 未找到天气区块")
             return None
         div = today_div[0]
-        weather_ele = div.xpath('.//p[@class="wea"]/text()')
-        if not weather_ele:
-            weather_ele = div.xpath('.//p[contains(@class, "wea")]/text()')
-        weather = weather_ele[0].strip() if weather_ele else ""
-        temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
-        if len(temp_ele) >= 2:
-            temp_high = temp_ele[0].strip()
-            temp_low = temp_ele[1].strip()
-            temp_str = f"{temp_low}~{temp_high}℃"
-        elif len(temp_ele) == 1:
-            temp_str = f"{temp_ele[0].strip()}℃"
+        # 获取完整文本
+        full_text = "".join(div.itertext())
+        # 提取天气现象
+        weather_match = re.search(r'(晴|多云|阴|小雨|中雨|大雨|暴雨|雷阵雨|冰雹|雪|雾|扬沙|浮尘)', full_text)
+        weather = weather_match.group(1) if weather_match else ""
+        # 提取气温（高低）
+        temps = re.findall(r'(\d+)℃', full_text)
+        if len(temps) >= 2:
+            # 通常第一个是高温，第二个是低温？根据实际页面顺序，先高温后低温，但我们按低~高排列
+            high = temps[0]
+            low = temps[1]
+            temp_str = f"{low}~{high}℃"
+        elif len(temps) == 1:
+            temp_str = f"{temps[0]}℃"
         else:
-            full_text = "".join(div.itertext())
-            temps = re.findall(r'(\d+)℃', full_text)
-            if temps:
-                if len(temps) >= 2:
-                    temp_str = f"{temps[1]}~{temps[0]}℃"
-                else:
-                    temp_str = f"{temps[0]}℃"
-            else:
-                temp_str = "?"
-        wind_ele = div.xpath('.//p[@class="win"]/text()')
-        if not wind_ele:
-            wind_ele = div.xpath('.//p[contains(@class, "win")]/text()')
-        wind = wind_ele[0].strip() if wind_ele else ""
+            temp_str = "?"
+        # 提取风力
+        wind_match = re.search(r'([北南西东][风转].*?级|微风|无持续风向)', full_text)
+        wind = wind_match.group(1) if wind_match else ""
+        if not wind:
+            # 尝试另一种模式
+            wind_match = re.search(r'(\d+级|微风)', full_text)
+            wind = wind_match.group(1) if wind_match else ""
         if weather and temp_str and wind:
             return f"{weather}，气温{temp_str}，{wind}"
         elif weather and temp_str:
             return f"{weather}，气温{temp_str}"
         else:
-            return "".join(div.itertext()).strip()[:100]
+            # 保底：返回前100字符（但应尽量避免）
+            logger.warning(f"{city_name} 解析不完整，返回原始文本")
+            return full_text[:100]
     except Exception as e:
         logger.error(f"{city_name} 抓取失败: {e}")
         return None
@@ -213,7 +212,9 @@ def run_daily_forecast():
     else:
         logger.warning("消息为空，不推送")
 
-# ======================== 气象预警 ========================
+# ======================== 气象预警（与原代码相同，略，但实际需要包含所有预警函数） ========================
+# 以下为预警函数（与之前正式版相同，为保证完整性，这里一并包含）
+
 def extract_city_from_title(title):
     match = re.search(r'省(.+?)市', title)
     if match:
@@ -386,7 +387,6 @@ if __name__ == "__main__":
     if not is_beijing_time_between(8, 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    # 预报窗口扩大到 8:00-10:00，避免调度延迟错过
     if 8 <= now_bj.hour < 10:
         logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
