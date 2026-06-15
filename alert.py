@@ -2,11 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 山西东风南方汽车销售服务有限公司 - 天气预警机器人
-正式版
-- 每天 8:00-9:00 推送全省当天天气预报
-- 每小时 8:00-21:00 检查气象预警（仅推送目标城市，忽略高温/雷电）
-- 相同类型+等级预警合并为一条消息
-- 企业微信错误码校验、消息长度控制、特殊字符清洗
+最终稳定版（强制 UTC+8，扩大预报窗口）
 """
 
 import requests
@@ -17,10 +13,6 @@ import time
 import logging
 from datetime import datetime, timedelta
 from lxml import etree
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from pytz import timezone as ZoneInfo
 
 # ======================== 配置区域 ========================
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2eaff206-0af2-4a1f-b64b-7b88270d5b1b"
@@ -50,13 +42,10 @@ ALERT_CACHE_FILE = "alert_cache.json"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ======================== 辅助函数 ========================
+# ======================== 强制北京时间（不再依赖zoneinfo） ========================
 def get_beijing_now():
-    try:
-        tz = ZoneInfo("Asia/Shanghai")
-        return datetime.now(tz)
-    except:
-        return datetime.utcnow() + timedelta(hours=8)
+    """强制返回 UTC+8 时间，避免时区库问题"""
+    return datetime.utcnow() + timedelta(hours=8)
 
 def is_beijing_time_between(start_hour, end_hour):
     now_bj = get_beijing_now()
@@ -115,8 +104,6 @@ def get_city_today_weather(city_name, url):
         resp = requests.get(url, headers=headers, timeout=10)
         resp.encoding = "utf-8"
         tree = etree.HTML(resp.text)
-        
-        # 定位今日天气区块
         today_div = tree.xpath('//div[@class="day7"]/div[1]')
         if not today_div:
             today_div = tree.xpath('//*[@id="day7"]/div[1]')
@@ -125,21 +112,11 @@ def get_city_today_weather(city_name, url):
         if not today_div:
             logger.warning(f"{city_name}: 未找到天气区块")
             return None
-        
         div = today_div[0]
-        
-        # 天气现象
         weather_ele = div.xpath('.//p[@class="wea"]/text()')
         if not weather_ele:
             weather_ele = div.xpath('.//p[contains(@class, "wea")]/text()')
-        if weather_ele:
-            weather = weather_ele[0].strip()
-        else:
-            text = "".join(div.itertext())
-            match = re.search(r'(晴|多云|阴|小雨|中雨|大雨|暴雨|雷阵雨|冰雹|雪|雾)', text)
-            weather = match.group(1) if match else ""
-        
-        # 温度
+        weather = weather_ele[0].strip() if weather_ele else ""
         temp_ele = div.xpath('.//p[@class="tem"]/span/text()')
         if len(temp_ele) >= 2:
             temp_high = temp_ele[0].strip()
@@ -157,26 +134,16 @@ def get_city_today_weather(city_name, url):
                     temp_str = f"{temps[0]}℃"
             else:
                 temp_str = "?"
-        
-        # 风力
         wind_ele = div.xpath('.//p[@class="win"]/text()')
         if not wind_ele:
             wind_ele = div.xpath('.//p[contains(@class, "win")]/text()')
-        if wind_ele:
-            wind = wind_ele[0].strip()
-        else:
-            text = "".join(div.itertext())
-            match = re.search(r'([北南西东][风转].*?级|微风|无持续风向)', text)
-            wind = match.group(1) if match else ""
-        
+        wind = wind_ele[0].strip() if wind_ele else ""
         if weather and temp_str and wind:
             return f"{weather}，气温{temp_str}，{wind}"
         elif weather and temp_str:
             return f"{weather}，气温{temp_str}"
         else:
-            # 保底：返回原始文本片段
-            raw = "".join(div.itertext()).strip()[:100]
-            return raw
+            return "".join(div.itertext()).strip()[:100]
     except Exception as e:
         logger.error(f"{city_name} 抓取失败: {e}")
         return None
@@ -248,19 +215,16 @@ def run_daily_forecast():
 
 # ======================== 气象预警 ========================
 def extract_city_from_title(title):
-    # 模式1：省XX市
     match = re.search(r'省(.+?)市', title)
     if match:
         city = match.group(1)
         if re.match(r'^[\u4e00-\u9fa5]{2,4}$', city):
             return city
-    # 模式2：直接匹配“XX市”且前面不是“省”或“中国”
     match = re.search(r'(?<!省)(?<!中国)([\u4e00-\u9fa5]{2,4})市', title)
     if match:
         city = match.group(1)
         if city not in ['山西', '全省']:
             return city
-    # 模式3：从“发布”前查找
     match = re.search(r'([\u4e00-\u9fa5]{2,4})市[^省]', title)
     if match:
         city = match.group(1)
@@ -422,8 +386,8 @@ if __name__ == "__main__":
     if not is_beijing_time_between(8, 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    # 预报仅在 8:00-9:00 之间推送
-    if 8 <= now_bj.hour < 9:
+    # 预报窗口扩大到 8:00-10:00，避免调度延迟错过
+    if 8 <= now_bj.hour < 10:
         logger.info("===== 执行每日天气预报推送 =====")
         run_daily_forecast()
         logger.info("===== 执行预警检查 =====")
