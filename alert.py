@@ -58,7 +58,6 @@ def send_wecom(content):
     logger.error("发送失败")
     return False
 
-# ========== 天气预报部分（完全不变） ==========
 def get_weather(city, url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
@@ -111,7 +110,6 @@ def daily_forecast():
         with open(cache_file, "w") as f:
             f.write(today)
 
-# ========== 预警部分（增强版，仅修改此处） ==========
 def extract_city(title):
     m = re.search(r'省(.+?)市', title)
     if m and re.match(r'^[\u4e00-\u9fa5]{2,4}$', m.group(1)):
@@ -122,37 +120,33 @@ def extract_city(title):
     return None
 
 def fetch_alerts_with_retry():
-    """增强的预警获取，带重试和错误诊断"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://weather.cma.cn/"
     }
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             resp = requests.get(ALERT_API_URL, headers=headers, timeout=10)
             logger.info(f"预警接口状态码: {resp.status_code}")
             if resp.status_code != 200:
-                logger.error(f"预警接口返回非200状态码: {resp.status_code}, 内容预览: {resp.text[:200]}")
-                if attempt < max_retries - 1:
+                logger.error(f"非200状态码: {resp.status_code}, 内容预览: {resp.text[:200]}")
+                if attempt < 2:
                     time.sleep(2)
                 continue
-            # 尝试解析JSON
             data = resp.json()
             if data.get("code") == 0:
                 return data.get("data", [])
             else:
-                logger.warning(f"预警接口返回错误码: {data.get('code')}, 消息: {data.get('msg')}")
+                logger.warning(f"接口返回错误码: {data.get('code')}")
                 return []
         except requests.exceptions.JSONDecodeError as e:
-            logger.error(f"JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
-            logger.error(f"响应内容预览: {resp.text[:200]}")
-            if attempt < max_retries - 1:
+            logger.error(f"JSON解析失败 (尝试 {attempt+1}/3): {e}, 内容预览: {resp.text[:200]}")
+            if attempt < 2:
                 time.sleep(3)
         except Exception as e:
-            logger.error(f"预警接口请求异常 (尝试 {attempt+1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
+            logger.error(f"请求异常 (尝试 {attempt+1}/3): {e}")
+            if attempt < 2:
                 time.sleep(2)
     return []
 
@@ -176,6 +170,9 @@ def alerts_check():
         level = {"蓝": "蓝色", "黄": "黄色", "橙": "橙色", "红": "红色"}[level_match.group(1)]
         type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
         alert_type = type_match.group(1).replace('冰霍', '冰雹') if type_match else "未知"
+        # 清洗字段（去除空格、特殊字符）
+        alert_type = alert_type.strip()
+        level = level.strip()
         city = extract_city(title)
         if not city or city not in ALERT_TARGET_CITIES:
             continue
@@ -190,13 +187,22 @@ def alerts_check():
         logger.info("未获取到任何关注的预警")
         return
 
-    # 合并同类型同等级
+    # 打印原始预警详情（用于调试合并是否生效）
+    logger.info(f"原始预警数量: {len(alerts)}")
+    for idx, a in enumerate(alerts):
+        logger.info(f"预警 {idx+1}: type='{a['type']}', level='{a['level']}', city='{a['city']}'")
+
+    # 按 (type, level) 分组
     groups = {}
     for a in alerts:
         key = (a["type"], a["level"])
         if key not in groups:
             groups[key] = {"type": a["type"], "level": a["level"], "cities": set(), "pub": a["pub"]}
         groups[key]["cities"].add(a["city"])
+
+    logger.info(f"合并后得到 {len(groups)} 个预警组")
+    for key, g in groups.items():
+        logger.info(f"组 {key}: cities={list(g['cities'])}")
 
     # 去重缓存
     cache_file = "alert_cache.json"
