@@ -120,21 +120,17 @@ def extract_city(title):
     return None
 
 def extract_alert_type(title):
-    """从标题中提取核心灾害类型（雷暴大风、冰雹、暴雨等）"""
-    # 已知类型列表
     known_types = ['雷暴大风', '冰雹', '暴雨', '大风', '暴雪', '大雪', '中雨', '大雨', '雷电', '高温']
     for t in known_types:
         if t in title:
             return t
-    # 备用：提取“发布”和“预警”之间的内容，去掉等级词
     m = re.search(r'发布(.+?)(?:蓝色|黄色|橙色|红色)预警', title)
     if m:
         core = m.group(1).strip()
-        # 如果core包含“雷暴大风”等，则返回
         for t in known_types:
             if t in core:
                 return t
-        return core  # 保底
+        return core
     return "未知"
 
 def fetch_alerts_with_retry():
@@ -168,6 +164,21 @@ def fetch_alerts_with_retry():
                 time.sleep(2)
     return []
 
+def get_time_range():
+    """获取当前3小时区间，用于消息中的时间范围"""
+    now = get_beijing_now()
+    hour = now.hour
+    # 计算3小时区间的起始小时
+    start_hour = (hour // 3) * 3
+    end_hour = start_hour + 3
+    # 如果结束小时超过21，则截断到21（但实际运行只在8-21之间）
+    if end_hour > 21:
+        end_hour = 21
+    # 格式化时间字符串
+    start_str = f"{start_hour:02d}:00"
+    end_str = f"{end_hour:02d}:00"
+    return f"{start_str}-{end_str}"
+
 def alerts_check():
     logger.info("开始检查气象预警...")
     alerts_data = fetch_alerts_with_retry()
@@ -186,7 +197,6 @@ def alerts_check():
         if not level_match:
             continue
         level = {"蓝": "蓝色", "黄": "黄色", "橙": "橙色", "红": "红色"}[level_match.group(1)]
-        # 修正：提取核心灾害类型
         alert_type = extract_alert_type(title)
         city = extract_city(title)
         if not city or city not in ALERT_TARGET_CITIES:
@@ -231,47 +241,36 @@ def alerts_check():
         sig = f"{g['type']}_{','.join(sorted(g['cities']))}"
         if sig not in sent:
             new_groups.append(g)
-            sent.add(sig)  # 先加入已发送集合，防止同一运行重复推送
+            sent.add(sig)  # 先加入已发送集合，防止同一运行重复
         else:
             logger.info(f"跳过已发送：{g['type']}{g['level']} {list(g['cities'])}")
 
     if not new_groups:
-        logger.info("没有需要推送的新预警")
+        logger.info("本时段没有需要推送的新预警")
         return
 
-    # 按优先级排序：红 > 橙 > 黄 > 蓝，并限制最多3条
+    # 生成汇总消息
+    time_range = get_time_range()
+    lines = [f"⚠️ 【山西气象预警汇总】", f"新增预警时间：{time_range}", ""]
+    # 按类型分组，组内按城市排序
+    # 为了消息整洁，先按类型排序，同类型按等级降序（红>橙>黄>蓝）
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
-    new_groups.sort(key=lambda x: level_order.get(x["level"], 4))
-    # 只取前3条
-    if len(new_groups) > 3:
-        logger.warning(f"超过每日3条限制，仅推送前3条（按优先级）")
-        new_groups = new_groups[:3]
-
-    # 推送并更新缓存
+    new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
     for g in new_groups:
-        tip = "📌 山西东风南方温馨提示："
-        t = g["type"]
-        l = g["level"]
-        if "暴雨" in t:
-            tip += "立即将露天展车转移至室内，检查排水系统，暂停户外试驾。" if l in ["橙色", "红色"] else "提前转移低洼处车辆，清理排水口，注意观察雨势。"
-        elif "大风" in t or "雷暴大风" in t:
-            tip += "立即加固广告牌，停止户外作业，车辆远离大树和建筑。" if l in ["橙色", "红色"] else "检查户外设施，提醒注意高空坠物。"
-        elif "冰雹" in t:
-            tip += "立即将露天车辆转移至室内或覆盖防雹车衣；人员进入室内躲避。"
-        elif "雪" in t:
-            tip += "检查屋顶承重，及时清理积雪，注意行车安全。" if "暴雪" in t or "大雪" in t else "注意路面湿滑，减少户外活动。"
-        else:
-            tip += "关注天气变化，做好防范。"
-        msg = f"【山西气象预警】\n⚠️ {g['type']}{g['level']}预警\n影响城市：{'、'.join(g['cities'])}\n发布时间：{g['pub']}\n{tip}\n请各单位立即响应，做好防范。"
-        if send_wecom(msg):
-            logger.info(f"已推送预警：{g['type']}{g['level']} {list(g['cities'])}")
-            # 推送成功后写入缓存（但我们已经先加入sent，保存时写入）
-        else:
-            logger.error(f"推送失败：{g['type']}{g['level']} {list(g['cities'])}")
+        cities_text = "、".join(sorted(g["cities"]))
+        lines.append(f"{g['type']}{g['level']}预警：{cities_text}")
+    lines.append("")
+    lines.append("📌 请各单位密切关注极端天气，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！")
+    msg = "\n".join(lines)
 
-    # 更新缓存文件（保存所有已发送签名，包括本次新推送的）
-    with open(cache_file, "w") as f:
-        json.dump({"date": today, "sigs": list(sent)}, f)
+    # 发送汇总消息
+    if send_wecom(msg):
+        logger.info(f"已推送汇总预警（{len(new_groups)} 组）")
+        # 更新缓存文件（保存所有已发送签名）
+        with open(cache_file, "w") as f:
+            json.dump({"date": today, "sigs": list(sent)}, f)
+    else:
+        logger.error("汇总预警推送失败")
 
 if __name__ == "__main__":
     now_bj = get_beijing_now()
