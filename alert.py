@@ -119,6 +119,24 @@ def extract_city(title):
         return m.group(1)
     return None
 
+def extract_alert_type(title):
+    """从标题中提取核心灾害类型（雷暴大风、冰雹、暴雨等）"""
+    # 已知类型列表
+    known_types = ['雷暴大风', '冰雹', '暴雨', '大风', '暴雪', '大雪', '中雨', '大雨', '雷电', '高温']
+    for t in known_types:
+        if t in title:
+            return t
+    # 备用：提取“发布”和“预警”之间的内容，去掉等级词
+    m = re.search(r'发布(.+?)(?:蓝色|黄色|橙色|红色)预警', title)
+    if m:
+        core = m.group(1).strip()
+        # 如果core包含“雷暴大风”等，则返回
+        for t in known_types:
+            if t in core:
+                return t
+        return core  # 保底
+    return "未知"
+
 def fetch_alerts_with_retry():
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -168,11 +186,8 @@ def alerts_check():
         if not level_match:
             continue
         level = {"蓝": "蓝色", "黄": "黄色", "橙": "橙色", "红": "红色"}[level_match.group(1)]
-        type_match = re.search(r'([\u4e00-\u9fa5]+)(?:蓝色|黄色|橙色|红色)预警', title)
-        alert_type = type_match.group(1).replace('冰霍', '冰雹') if type_match else "未知"
-        # 清洗字段（去除空格、特殊字符）
-        alert_type = alert_type.strip()
-        level = level.strip()
+        # 修正：提取核心灾害类型
+        alert_type = extract_alert_type(title)
         city = extract_city(title)
         if not city or city not in ALERT_TARGET_CITIES:
             continue
@@ -187,12 +202,7 @@ def alerts_check():
         logger.info("未获取到任何关注的预警")
         return
 
-    # 打印原始预警详情（用于调试合并是否生效）
-    logger.info(f"原始预警数量: {len(alerts)}")
-    for idx, a in enumerate(alerts):
-        logger.info(f"预警 {idx+1}: type='{a['type']}', level='{a['level']}', city='{a['city']}'")
-
-    # 按 (type, level) 分组
+    # 按 (type, level) 分组，合并城市
     groups = {}
     for a in alerts:
         key = (a["type"], a["level"])
@@ -201,10 +211,8 @@ def alerts_check():
         groups[key]["cities"].add(a["city"])
 
     logger.info(f"合并后得到 {len(groups)} 个预警组")
-    for key, g in groups.items():
-        logger.info(f"组 {key}: cities={list(g['cities'])}")
 
-    # 去重缓存
+    # 去重缓存（过滤已发送）
     cache_file = "alert_cache.json"
     today = get_beijing_now().strftime("%Y-%m-%d")
     cache = {"date": "", "sigs": []}
@@ -217,12 +225,13 @@ def alerts_check():
     if cache.get("date") != today:
         cache = {"date": today, "sigs": []}
     sent = set(cache["sigs"])
+
     new_groups = []
     for g in groups.values():
         sig = f"{g['type']}_{','.join(sorted(g['cities']))}"
         if sig not in sent:
             new_groups.append(g)
-            sent.add(sig)
+            sent.add(sig)  # 先加入已发送集合，防止同一运行重复推送
         else:
             logger.info(f"跳过已发送：{g['type']}{g['level']} {list(g['cities'])}")
 
@@ -230,6 +239,15 @@ def alerts_check():
         logger.info("没有需要推送的新预警")
         return
 
+    # 按优先级排序：红 > 橙 > 黄 > 蓝，并限制最多3条
+    level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
+    new_groups.sort(key=lambda x: level_order.get(x["level"], 4))
+    # 只取前3条
+    if len(new_groups) > 3:
+        logger.warning(f"超过每日3条限制，仅推送前3条（按优先级）")
+        new_groups = new_groups[:3]
+
+    # 推送并更新缓存
     for g in new_groups:
         tip = "📌 山西东风南方温馨提示："
         t = g["type"]
@@ -247,7 +265,11 @@ def alerts_check():
         msg = f"【山西气象预警】\n⚠️ {g['type']}{g['level']}预警\n影响城市：{'、'.join(g['cities'])}\n发布时间：{g['pub']}\n{tip}\n请各单位立即响应，做好防范。"
         if send_wecom(msg):
             logger.info(f"已推送预警：{g['type']}{g['level']} {list(g['cities'])}")
+            # 推送成功后写入缓存（但我们已经先加入sent，保存时写入）
+        else:
+            logger.error(f"推送失败：{g['type']}{g['level']} {list(g['cities'])}")
 
+    # 更新缓存文件（保存所有已发送签名，包括本次新推送的）
     with open(cache_file, "w") as f:
         json.dump({"date": today, "sigs": list(sent)}, f)
 
