@@ -58,6 +58,7 @@ def send_wecom(content):
     logger.error("发送失败")
     return False
 
+# ========== 天气预报部分（完全不变） ==========
 def get_weather(city, url):
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
@@ -110,6 +111,7 @@ def daily_forecast():
         with open(cache_file, "w") as f:
             f.write(today)
 
+# ========== 预警部分（增强版，仅修改此处） ==========
 def extract_city(title):
     m = re.search(r'省(.+?)市', title)
     if m and re.match(r'^[\u4e00-\u9fa5]{2,4}$', m.group(1)):
@@ -119,17 +121,50 @@ def extract_city(title):
         return m.group(1)
     return None
 
+def fetch_alerts_with_retry():
+    """增强的预警获取，带重试和错误诊断"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://weather.cma.cn/"
+    }
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(ALERT_API_URL, headers=headers, timeout=10)
+            logger.info(f"预警接口状态码: {resp.status_code}")
+            if resp.status_code != 200:
+                logger.error(f"预警接口返回非200状态码: {resp.status_code}, 内容预览: {resp.text[:200]}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                continue
+            # 尝试解析JSON
+            data = resp.json()
+            if data.get("code") == 0:
+                return data.get("data", [])
+            else:
+                logger.warning(f"预警接口返回错误码: {data.get('code')}, 消息: {data.get('msg')}")
+                return []
+        except requests.exceptions.JSONDecodeError as e:
+            logger.error(f"JSON解析失败 (尝试 {attempt+1}/{max_retries}): {e}")
+            logger.error(f"响应内容预览: {resp.text[:200]}")
+            if attempt < max_retries - 1:
+                time.sleep(3)
+        except Exception as e:
+            logger.error(f"预警接口请求异常 (尝试 {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)
+    return []
+
 def alerts_check():
-    try:
-        resp = requests.get(ALERT_API_URL, timeout=10)
-        data = resp.json()
-        if data.get("code") != 0:
-            return
-    except Exception as e:
-        logger.error(f"预警接口失败: {e}")
+    logger.info("开始检查气象预警...")
+    alerts_data = fetch_alerts_with_retry()
+    if not alerts_data:
+        logger.error("预警数据获取失败，跳过本次检查")
         return
+
     alerts = []
-    for a in data.get("data", []):
+    for a in alerts_data:
         title = a.get("title") or a.get("headline")
         if not title:
             continue
@@ -150,12 +185,20 @@ def alerts_check():
         except:
             pass
         alerts.append({"type": alert_type, "level": level, "city": city, "pub": pub})
+
+    if not alerts:
+        logger.info("未获取到任何关注的预警")
+        return
+
+    # 合并同类型同等级
     groups = {}
     for a in alerts:
         key = (a["type"], a["level"])
         if key not in groups:
             groups[key] = {"type": a["type"], "level": a["level"], "cities": set(), "pub": a["pub"]}
         groups[key]["cities"].add(a["city"])
+
+    # 去重缓存
     cache_file = "alert_cache.json"
     today = get_beijing_now().strftime("%Y-%m-%d")
     cache = {"date": "", "sigs": []}
@@ -176,8 +219,11 @@ def alerts_check():
             sent.add(sig)
         else:
             logger.info(f"跳过已发送：{g['type']}{g['level']} {list(g['cities'])}")
+
     if not new_groups:
+        logger.info("没有需要推送的新预警")
         return
+
     for g in new_groups:
         tip = "📌 山西东风南方温馨提示："
         t = g["type"]
@@ -195,6 +241,7 @@ def alerts_check():
         msg = f"【山西气象预警】\n⚠️ {g['type']}{g['level']}预警\n影响城市：{'、'.join(g['cities'])}\n发布时间：{g['pub']}\n{tip}\n请各单位立即响应，做好防范。"
         if send_wecom(msg):
             logger.info(f"已推送预警：{g['type']}{g['level']} {list(g['cities'])}")
+
     with open(cache_file, "w") as f:
         json.dump({"date": today, "sigs": list(sent)}, f)
 
