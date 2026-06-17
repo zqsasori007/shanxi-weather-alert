@@ -1,7 +1,7 @@
 name: 山西东风南方天气预警
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '5 */3 * * *'   # 每3小时的第5分钟运行（北京时间 8:05, 11:05, 14:05, 17:05, 20:05）
   workflow_dispatch:
 jobs:
   weather-bot:
