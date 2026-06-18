@@ -165,16 +165,12 @@ def fetch_alerts_with_retry():
     return []
 
 def get_time_range():
-    """获取当前3小时区间，用于消息中的时间范围"""
     now = get_beijing_now()
     hour = now.hour
-    # 计算3小时区间的起始小时
     start_hour = (hour // 3) * 3
     end_hour = start_hour + 3
-    # 如果结束小时超过21，则截断到21（但实际运行只在8-21之间）
     if end_hour > 21:
         end_hour = 21
-    # 格式化时间字符串
     start_str = f"{start_hour:02d}:00"
     end_str = f"{end_hour:02d}:00"
     return f"{start_str}-{end_str}"
@@ -253,7 +249,6 @@ def alerts_check():
     time_range = get_time_range()
     lines = [f"⚠️ 【山西气象预警汇总】", f"新增预警时间：{time_range}", ""]
     # 按类型分组，组内按城市排序
-    # 为了消息整洁，先按类型排序，同类型按等级降序（红>橙>黄>蓝）
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
     new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
     for g in new_groups:
@@ -275,11 +270,18 @@ def alerts_check():
 if __name__ == "__main__":
     now_bj = get_beijing_now()
     logger.info(f"北京时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')}")
+
     if not (8 <= now_bj.hour < 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    if 8 <= now_bj.hour < 12:
+
+    # 天气预报窗口：8:00-8:59（整个8点时段）
+    if 8 <= now_bj.hour < 9:
         logger.info("执行每日天气预报推送")
         daily_forecast()
+    else:
+        logger.info("当前不在天气预报窗口内，跳过")
+
+    # 预警检查：每次运行都执行（去重由内部缓存控制）
     logger.info("执行预警检查")
     alerts_check()
