@@ -164,17 +164,6 @@ def fetch_alerts_with_retry():
                 time.sleep(2)
     return []
 
-def get_time_range():
-    now = get_beijing_now()
-    hour = now.hour
-    start_hour = (hour // 3) * 3
-    end_hour = start_hour + 3
-    if end_hour > 21:
-        end_hour = 21
-    start_str = f"{start_hour:02d}:00"
-    end_str = f"{end_hour:02d}:00"
-    return f"{start_str}-{end_str}"
-
 def alerts_check():
     logger.info("开始检查气象预警...")
     alerts_data = fetch_alerts_with_retry()
@@ -245,15 +234,16 @@ def alerts_check():
         logger.info("本时段没有需要推送的新预警")
         return
 
-    # 生成汇总消息
-    time_range = get_time_range()
-    lines = [f"⚠️ 【山西气象预警汇总】", f"新增预警时间：{time_range}", ""]
+    # 生成汇总消息（使用完整日期时间 + 缩进）
+    now = get_beijing_now()
+    time_str = now.strftime("%Y年%m月%d日 %H:%M")
+    lines = [f"⚠️ 【山西气象预警汇总】预警更新于 {time_str}", ""]
     # 按类型分组，组内按城市排序
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
     new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
     for g in new_groups:
         cities_text = "、".join(sorted(g["cities"]))
-        lines.append(f"{g['type']}{g['level']}预警：{cities_text}")
+        lines.append(f"      {g['type']}{g['level']}预警：{cities_text}")  # 缩进6个空格
     lines.append("")
     lines.append("📌 请各单位密切关注极端天气，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！")
     msg = "\n".join(lines)
