@@ -10,8 +10,22 @@ ALERT_API_URL = "https://weather.cma.cn/api/map/alarm?adcode=14"
 ALL_CITIES = ["太原", "大同", "朔州", "忻州", "吕梁", "晋中", "阳泉", "长治", "晋城", "临汾", "运城"]
 ALERT_TARGET_CITIES = ["太原", "晋中", "吕梁", "阳泉", "忻州", "长治", "运城"]
 IGNORE_ALERT_TYPES = ["高温", "雷电"]
-CITY_URLS = {c: f"http://www.nmc.cn/publish/forecast/ASX/{c}.html" for c in ALL_CITIES}
-CITY_URLS.update({"太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html", "晋中": "http://www.nmc.cn/publish/forecast/ASX/jinzhong.html"})
+
+# 显式定义所有城市的正确 URL（拼音）
+CITY_URLS = {
+    "太原": "http://www.nmc.cn/publish/forecast/ASX/taiyuan.html",
+    "大同": "http://www.nmc.cn/publish/forecast/ASX/datong.html",
+    "朔州": "http://www.nmc.cn/publish/forecast/ASX/shuozhou.html",
+    "忻州": "http://www.nmc.cn/publish/forecast/ASX/xinzhou.html",
+    "吕梁": "http://www.nmc.cn/publish/forecast/ASX/lvliang.html",
+    "晋中": "http://www.nmc.cn/publish/forecast/ASX/jinzhong.html",
+    "阳泉": "http://www.nmc.cn/publish/forecast/ASX/yangquan.html",
+    "长治": "http://www.nmc.cn/publish/forecast/ASX/changzhi.html",
+    "晋城": "http://www.nmc.cn/publish/forecast/ASX/jincheng.html",
+    "临汾": "http://www.nmc.cn/publish/forecast/ASX/linfen.html",
+    "运城": "http://www.nmc.cn/publish/forecast/ASX/yuncheng.html"
+}
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -198,7 +212,5 @@ if __name__ == "__main__":
     if not (8 <= now_bj.hour < 21):
         logger.info("当前不在8:00-21:00之间，脚本退出")
         exit(0)
-    # 预报推送：每次运行都尝试，缓存控制每天只发一次
     daily_forecast()
-    # 预警检查
     alerts_check()
