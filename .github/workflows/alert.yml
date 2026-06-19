@@ -1,7 +1,7 @@
 name: 山西东风南方天气预警
 on:
   schedule:
-    - cron: '*/10 * * * *'   # 每10分钟一次，确保及时捕获预警
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 jobs:
   weather-bot:
@@ -11,5 +11,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      # 恢复缓存文件（如果存在）
+      - name: 恢复缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            forecast_sent_date.txt
+            alert_cache.json
+          key: weather-cache-${{ github.ref_name }}
+          restore-keys: |
+            weather-cache-${{ github.ref_name }}-
+
       - run: pip install requests lxml pytz
       - run: python alert.py
+
+      # 保存缓存文件（即使脚本失败也保存）
+      - name: 保存缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            forecast_sent_date.txt
+            alert_cache.json
+          key: weather-cache-${{ github.ref_name }}
