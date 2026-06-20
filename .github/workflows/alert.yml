@@ -19,6 +19,8 @@ jobs:
             forecast_sent_date.txt
             alert_cache.json
           key: weather-cache-v1
+          restore-keys: |
+            weather-cache-v1
 
       - run: pip install requests lxml pytz
       - run: python alert.py
