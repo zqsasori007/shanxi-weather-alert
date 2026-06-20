@@ -88,7 +88,7 @@ def daily_forecast():
     msg = f"【山西省天气预报】{today}（{weekday}） 发布\n\n"
     for city in ALL_CITIES:
         if city in weather: msg += f"📍 {city}：{weather[city]}；\n"
-    msg += "\n⚠️ 温馨提示：请各单位密切关注实时气象预警，如遇极端天气请做好车辆防护、排水检查等应急工作；提醒员工及合作单位做好人员及财产安全防护！\n📢 数据来源：中央气象台"
+    msg += "\n⚠️ 温馨提示：请各单位密切关注天气变化，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！\n📢 数据来源：中央气象台"
     if send_wecom(msg):
         with open(cache_file, "w") as f: f.write(today)
 
@@ -134,11 +134,31 @@ def fetch_alerts_with_retry():
             if attempt < 2: time.sleep(2)
     return []
 
+def should_run_alert_check():
+    """只在 11、14、17 点的前15分钟执行预警检查"""
+    now = get_beijing_now()
+    hour = now.hour
+    minute = now.minute
+    return hour in [11, 14, 17] and minute <= 15
+
+def get_time_window():
+    if get_beijing_now().hour == 11:
+        return "11:00-14:00"
+    elif get_beijing_now().hour == 14:
+        return "14:00-17:00"
+    elif get_beijing_now().hour == 17:
+        return "17:00-20:00"
+    else:
+        return "未知时段"
+
 def alerts_check():
+    if not should_run_alert_check():
+        logger.info("不在预警发送时间窗口（11、14、17点），跳过预警检查")
+        return
     logger.info("开始检查气象预警...")
     alerts_data = fetch_alerts_with_retry()
     if not alerts_data:
-        logger.error("预警数据获取失败，跳过本次检查")
+        logger.error("预警数据获取失败")
         return
     alerts = []
     for a in alerts_data:
@@ -178,26 +198,26 @@ def alerts_check():
     sent = set(cache["sigs"])
     new_groups = []
     for g in groups.values():
-        # 修改：去重签名只使用预警类型，忽略等级和城市
-        sig = g["type"]
+        sig = f"{g['type']}_{g['level']}"
         if sig not in sent:
             new_groups.append(g)
             sent.add(sig)
         else:
-            logger.info(f"跳过已发送类型：{g['type']}（等级：{g['level']}，城市：{list(g['cities'])}）")
+            logger.info(f"跳过已发送：{g['type']}{g['level']} {list(g['cities'])}")
     if not new_groups:
-        logger.info("本时段没有需要推送的新预警（类型已发送）")
+        logger.info("本时段没有需要推送的新预警")
         return
+    time_window = get_time_window()
     now = get_beijing_now()
     time_str = now.strftime("%Y-%m-%d %H:%M")
-    lines = [f"⚠️ 【山西气象预警汇总】预警更新于 {time_str}", ""]
+    lines = [f"⚠️ 【山西气象预警汇总】{time_window} 更新于 {time_str}", ""]
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
     new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
     for g in new_groups:
         cities_text = "、".join(sorted(g["cities"]))
         lines.append(f"      {g['type']}{g['level']}预警：{cities_text}")
     lines.append("")
-    lines.append("📌 请各单位密切关注极端天气，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！")
+    lines.append("📌 请各单位密切关注天气变化，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！")
     msg = "\n".join(lines)
     if send_wecom(msg):
         logger.info(f"已推送汇总预警（{len(new_groups)} 组）")
