@@ -6,11 +6,13 @@ on:
 jobs:
   weather-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 明确授予写权限
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true   # 确保有推送权限
-          fetch-depth: 0              # 拉取完整历史（用于git diff）
+          persist-credentials: true
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -26,6 +28,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add forecast_sent_date.txt alert_cache.json
-          # 只有文件有变更时才提交，且跳过 CI
           git diff --staged --quiet || git commit -m "更新缓存文件 [skip ci]"
+          # 使用 GITHUB_TOKEN 进行认证
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git push
