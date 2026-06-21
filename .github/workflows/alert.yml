@@ -8,27 +8,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true   # 确保有推送权限
+          fetch-depth: 0              # 拉取完整历史（用于git diff）
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 恢复缓存
-        uses: actions/cache@v4
-        with:
-          path: |
-            forecast_sent_date.txt
-            alert_cache.json
-          key: weather-cache-v1
-          restore-keys: |
-            weather-cache-v1
-
       - run: pip install requests lxml pytz
-      - run: python alert.py
 
-      - name: 保存缓存
-        uses: actions/cache@v4
-        with:
-          path: |
-            forecast_sent_date.txt
-            alert_cache.json
-          key: weather-cache-v1
+      - name: 运行天气脚本
+        run: python alert.py
+
+      - name: 提交缓存文件到仓库
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add forecast_sent_date.txt alert_cache.json
+          # 只有文件有变更时才提交，且跳过 CI
+          git diff --staged --quiet || git commit -m "更新缓存文件 [skip ci]"
+          git push
