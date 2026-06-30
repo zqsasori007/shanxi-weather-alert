@@ -87,8 +87,10 @@ def daily_forecast():
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][get_beijing_now().weekday()]
     msg = f"【山西省天气预报】{today}（{weekday}） 发布\n\n"
     for city in ALL_CITIES:
-        if city in weather: msg += f"📍 {city}：{weather[city]}；\n"
-    msg += "\n⚠️ 温馨提示：请各单位密切关注天气变化，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！\n📢 数据来源：中央气象台"
+        if city in weather:
+            msg += f"📍 {city}：{weather[city]}；\n"
+    msg += "\n📢 数据来源：中央气象台\n"
+    msg += "📢 预报单位：山西东风南方（综合共享中心）"
     if send_wecom(msg):
         with open(cache_file, "w") as f: f.write(today)
 
@@ -135,21 +137,17 @@ def fetch_alerts_with_retry():
     return []
 
 def should_run_alert_check():
-    """只在 11、14、17 点的前15分钟执行预警检查"""
     now = get_beijing_now()
     hour = now.hour
     minute = now.minute
     return hour in [11, 14, 17] and minute <= 15
 
 def get_time_window():
-    if get_beijing_now().hour == 11:
-        return "11:00-14:00"
-    elif get_beijing_now().hour == 14:
-        return "14:00-17:00"
-    elif get_beijing_now().hour == 17:
-        return "17:00-20:00"
-    else:
-        return "未知时段"
+    hour = get_beijing_now().hour
+    if hour == 11: return "11:00-14:00"
+    elif hour == 14: return "14:00-17:00"
+    elif hour == 17: return "17:00-20:00"
+    else: return "未知时段"
 
 def alerts_check():
     if not should_run_alert_check():
@@ -210,14 +208,17 @@ def alerts_check():
     time_window = get_time_window()
     now = get_beijing_now()
     time_str = now.strftime("%Y-%m-%d %H:%M")
-    lines = [f"⚠️ 【山西气象预警汇总】{time_window} 更新于 {time_str}", ""]
+    # 标题格式：⚠ 【山西气象预警汇总（14:00-17:00）】 更新于 2026-06-30 14:05
+    lines = [f"⚠ 【山西气象预警汇总（{time_window}）】 更新于 {time_str}", ""]
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
     new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
     for g in new_groups:
         cities_text = "、".join(sorted(g["cities"]))
-        lines.append(f"      {g['type']}{g['level']}预警：{cities_text}")
+        lines.append(f"📍 {g['type']}{g['level']}预警：{cities_text}")
     lines.append("")
-    lines.append("📌 请各单位密切关注天气变化，做好车辆防护、排水检查等应急工作；提醒员工注意个人安全，提醒合作方注意提前防范！")
+    lines.append("📢 山西东风南方（平台）提醒：")
+    lines.append("      1、请各专营店密切关注天气变化，做好车辆转移/防护，对屋顶及排水系统、电路隐患、高空坠物等风险点进行逐一提前排查；")
+    lines.append("      2、请各专营店提醒员工注意上下班个人安全，同时提醒各合作方（包括但不限于施工队、二级网点等）注意提前防范！")
     msg = "\n".join(lines)
     if send_wecom(msg):
         logger.info(f"已推送汇总预警（{len(new_groups)} 组）")
