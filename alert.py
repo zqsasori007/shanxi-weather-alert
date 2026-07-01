@@ -208,7 +208,6 @@ def alerts_check():
     time_window = get_time_window()
     now = get_beijing_now()
     time_str = now.strftime("%Y-%m-%d %H:%M")
-    # 标题格式：⚠ 【山西气象预警汇总（14:00-17:00）】 更新于 2026-06-30 14:05
     lines = [f"⚠ 【山西气象预警汇总（{time_window}）】 更新于 {time_str}", ""]
     level_order = {"红色": 0, "橙色": 1, "黄色": 2, "蓝色": 3}
     new_groups.sort(key=lambda x: (x["type"], level_order.get(x["level"], 4)))
@@ -217,7 +216,7 @@ def alerts_check():
         lines.append(f"📍 {g['type']}{g['level']}预警：{cities_text}")
     lines.append("")
     lines.append("📢 山西东风南方（平台）提醒：")
-    lines.append("      1、请各专营店密切关注天气变化，做好车辆转移/防护，对屋顶及排水系统、电路隐患、高空坠物等风险点进行逐一提前排查；")
+    lines.append("      1、请各专营店密切关注天气变化，做好车辆转移/防护，对屋顶及排水系统、电路隐患、高空坠物等风险点提前进行逐一排查；")
     lines.append("      2、请各专营店提醒员工注意上下班个人安全，同时提醒各合作方（包括但不限于施工队、二级网点等）注意提前防范！")
     msg = "\n".join(lines)
     if send_wecom(msg):
