@@ -90,7 +90,7 @@ def daily_forecast():
         if city in weather:
             msg += f"📍 {city}：{weather[city]}；\n"
     msg += "\n📢 数据来源：中央气象台\n"
-    msg += "📢 预报单位：山西东风南方（综合共享中心）"
+    msg += "📢 发布单位：山西东风南方（平台）"   # 修改点：预报单位 → 发布单位
     if send_wecom(msg):
         with open(cache_file, "w") as f: f.write(today)
 
